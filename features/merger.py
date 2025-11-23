@@ -178,19 +178,63 @@ class JavaFileMerger:
                 
                 # Check if we've completed a member
                 if brace_count == 0 and (stripped.endswith(';') or stripped.endswith('}')):
-                    member_text = '\n'.join(current_member).strip()
-                    if member_text:
-                        members.append(member_text)
+                    member_text = '\n'.join(current_member)
+                    # Normalize the member by removing its base indentation
+                    normalized_member = self._normalize_member_indentation(member_text)
+                    if normalized_member.strip():
+                        members.append(normalized_member)
                     current_member = []
                     in_member = False
         
         # Handle any remaining content
         if current_member:
-            member_text = '\n'.join(current_member).strip()
-            if member_text:
-                members.append(member_text)
+            member_text = '\n'.join(current_member)
+            normalized_member = self._normalize_member_indentation(member_text)
+            if normalized_member.strip():
+                members.append(normalized_member)
         
         return members
+    
+    def _normalize_member_indentation(self, member: str) -> str:
+        """
+        Remove base indentation from a member to normalize it.
+        Preserves relative indentation within the member.
+        """
+        lines = member.split('\n')
+        
+        if not lines:
+            return member
+        
+        # Remove leading/trailing empty lines
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        
+        if not lines:
+            return member
+        
+        # Find minimum indentation
+        min_indent = float('inf')
+        for line in lines:
+            if line.strip():
+                leading_spaces = len(line) - len(line.lstrip())
+                min_indent = min(min_indent, leading_spaces)
+        
+        if min_indent == float('inf'):
+            min_indent = 0
+        
+        # Remove common indentation
+        normalized_lines = []
+        for line in lines:
+            if line.strip():
+                # Remove minimum indentation, preserving relative structure
+                dedented = line[min_indent:] if len(line) >= min_indent else line.lstrip()
+                normalized_lines.append(dedented)
+            else:
+                normalized_lines.append('')
+        
+        return '\n'.join(normalized_lines)
     
     def _is_field_declaration(self, member: str) -> bool:
         """Determine if a member is a field declaration vs a method."""
@@ -237,7 +281,7 @@ class JavaFileMerger:
         return normalized
     
     def _build_merged_file(self) -> str:
-        """Build the final merged Java file content."""
+        """Build the final merged Java file content with proper indentation."""
         lines = []
         
         # Add package
@@ -257,18 +301,20 @@ class JavaFileMerger:
         lines.append(f'public class {self.class_name} {{')
         lines.append('')
         
-        # Add all FIELDS first (deduplicated)
+        # Add all FIELDS first (deduplicated) with proper indentation
         if self.fields:
             for field in self.fields.values():
-                indented_field = '\n'.join('    ' + line if line.strip() else '' 
-                                          for line in field.split('\n'))
+                # Normalize and indent the field
+                normalized_field = self._normalize_member_indentation(field)
+                indented_field = self._indent_code_block(normalized_field, indent_level=1)
                 lines.append(indented_field)
             lines.append('')
         
-        # Add all METHODS
+        # Add all METHODS with proper indentation
         for i, method in enumerate(self.methods):
-            indented_method = '\n'.join('    ' + line if line.strip() else '' 
-                                       for line in method.split('\n'))
+            # Normalize and indent the method
+            normalized_method = self._normalize_member_indentation(method)
+            indented_method = self._indent_code_block(normalized_method, indent_level=1)
             lines.append(indented_method)
             
             if i < len(self.methods) - 1:
@@ -278,6 +324,56 @@ class JavaFileMerger:
         lines.append('}')
         
         return '\n'.join(lines)
+    
+    def _indent_code_block(self, code: str, indent_level: int = 1) -> str:
+        """
+        Properly indent a code block while preserving internal structure.
+        
+        Args:
+            code: The code block to indent
+            indent_level: Number of indentation levels (1 level = 4 spaces)
+        
+        Returns:
+            Properly indented code block
+        """
+        base_indent = '    ' * indent_level
+        lines = code.split('\n')
+        
+        if not lines:
+            return code
+        
+        # Remove all leading/trailing empty lines
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        
+        if not lines:
+            return code
+        
+        # Find minimum indentation (excluding empty lines)
+        min_indent = float('inf')
+        for line in lines:
+            if line.strip():  # Only consider non-empty lines
+                leading_spaces = len(line) - len(line.lstrip())
+                min_indent = min(min_indent, leading_spaces)
+        
+        # If all lines are empty or no indentation found
+        if min_indent == float('inf'):
+            min_indent = 0
+        
+        # Remove common leading indentation and add base indentation
+        indented_lines = []
+        for line in lines:
+            if line.strip():  # Non-empty line
+                # Remove the minimum indentation, preserving relative indentation
+                # Then add base indentation
+                stripped = line[min_indent:] if len(line) >= min_indent else line.lstrip()
+                indented_lines.append(base_indent + stripped)
+            else:  # Empty line - no indentation
+                indented_lines.append('')
+        
+        return '\n'.join(indented_lines)
 
 
 if __name__ == "__main__":
