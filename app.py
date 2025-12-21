@@ -36,7 +36,7 @@ if generateBtn:
             st.text(verificationOutput)
         
         with st.spinner("Generating Automation Scripts ..."):
-            scripts = generateAutomationScripts(featureFile)
+            scripts = generateAutomationScriptsV2(featureFile)
 
         with tab3:
             st.subheader("Generated Scripts")
