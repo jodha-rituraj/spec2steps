@@ -75,7 +75,7 @@ class GherkinScenarioParser:
         """Process a single line of the feature file."""
         stripped_line = line.strip()
         
-        if stripped_line.startswith("Scenario Outline:"):
+        if stripped_line.startswith("Scenario Outline:") or stripped_line.startswith("Scenario:"):
             # Save previous block if it exists
             self._save_current_block()
             # Start new block
