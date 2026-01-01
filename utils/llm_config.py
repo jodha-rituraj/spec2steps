@@ -24,6 +24,10 @@ def get_llm(api_key=None):
     # Try to get API key from parameter, then environment
     groq_api_key = api_key or os.getenv("GROQ_API_KEY")
     
+    # Remove whitespace and check if valid
+    if groq_api_key:
+        groq_api_key = groq_api_key.strip()
+    
     if not groq_api_key:
         raise ValueError(
             "❌ No GROQ API key found! Please either:\n"
