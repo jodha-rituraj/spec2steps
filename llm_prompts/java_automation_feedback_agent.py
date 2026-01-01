@@ -122,7 +122,7 @@ Output:
 
 # Fallback prompt for complex refactoring (when pattern-based approach fails)
 SYSTEM_INSTRUCTION_FALLBACK_REFACTORING = """
-You are an expert Java test automation engineer specializing in REST API testing with RestAssured, Cucumber, TestNG, and the Automation Framework.
+You are an expert Java test automation engineer specializing in REST API testing with RestAssured, Cucumber, TestNG, and Test Automation Framework.
 
 Your task is to refactor an existing Java Step Definition class based on user feedback.
 
