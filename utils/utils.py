@@ -2,7 +2,7 @@ import streamlit as st
 
 import os, groq, langchain_groq, json, re, tempfile
 from dotenv import load_dotenv
-from utils.llm_config import llm
+from utils.llm_config import get_llm
 
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
@@ -19,8 +19,11 @@ from llm_prompts.java_automation_feedback_agent import SYSTEM_INSTRUCTION_INTENT
 from features.parser import GherkinScenarioParser, extractScenarioOulines
 from features.merger import JavaFileMerger
 
-def generateFeatureFile(inputRequirement: str) -> str:
+# Initialize LLM - will be updated when API key changes
+llm = get_llm()
 
+def generateFeatureFile(inputRequirement: str) -> str:
+    
     prompt = ChatPromptTemplate.from_template(
         "{SYSTEM_INSTRUCTION}:\n\n{INPUT_REQUIREMENTS}"
     )

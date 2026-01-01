@@ -30,8 +30,11 @@ with st.sidebar:
         os.environ["GROQ_API_KEY"] = api_key_input
         # Reinitialize LLM with new API key
         from utils.llm_config import get_llm
+        import utils.utils
         try:
-            get_llm(api_key_input)
+            new_llm = get_llm(api_key_input)
+            # Update the llm variable in utils module
+            utils.utils.llm = new_llm
             st.session_state.api_key_valid = True
         except Exception as e:
             st.error(f"❌ Invalid API key: {str(e)}")
