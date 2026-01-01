@@ -19,9 +19,6 @@ from llm_prompts.java_automation_feedback_agent import SYSTEM_INSTRUCTION_INTENT
 from features.parser import GherkinScenarioParser, extractScenarioOulines
 from features.merger import JavaFileMerger
 
-from features.parser import GherkinScenarioParser, extractScenarioOulines
-from features.merger import JavaFileMerger
-
 def generateFeatureFile(inputRequirement: str) -> str:
 
     prompt = ChatPromptTemplate.from_template(

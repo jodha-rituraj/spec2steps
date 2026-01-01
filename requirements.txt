@@ -1,0 +1,29 @@
+# Python Version: 3.13.5 or higher recommended
+
+# Core Dependencies
+streamlit>=1.29.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.5.0
+
+# LLM and AI Libraries
+langchain-groq>=0.0.1
+langchain-openai>=0.0.2
+langchain-core>=0.1.0
+groq>=0.4.0
+
+# Environment and Configuration
+python-dotenv>=1.0.0
+
+# API and Web
+python-multipart>=0.0.6
+
+# Standard library packages (no installation needed)
+# - os
+# - json
+# - re
+# - difflib
+# - typing
+# - pathlib
+# - logging
+# - sys
