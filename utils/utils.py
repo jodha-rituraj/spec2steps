@@ -12,8 +12,10 @@ import difflib
 from typing import List, Set, Dict, Tuple
 
 from llm_prompts.requirement_agent import SYSTEM_INSTRUCTION_REQ_AGENT, SYSTEM_INSTRUCTION_FEEDBACK_AGENT
+from llm_prompts.ui_requirement_agent import SYSTEM_INSTRUCTION_UI_REQ_AGENT, SYSTEM_INSTRUCTION_UI_FEEDBACK_AGENT
 from llm_prompts.verification_agent import SYSTEM_INSTRUCTION_VERIFICATION_AGENT
 from llm_prompts.java_automation_script_agent import SYSTEM_INSTRUCTION_AUTOMATION_AGENT, SYSTEM_INSTRUCTION_AUTOMATION_AGENT_PER_SCENARIO
+from llm_prompts.ui_automation_script_agent import SYSTEM_INSTRUCTION_UI_AUTOMATION_AGENT_PER_SCENARIO
 from llm_prompts.java_automation_feedback_agent import SYSTEM_INSTRUCTION_INTENT_EXTRACTION, SYSTEM_INSTRUCTION_FALLBACK_REFACTORING
 
 from features.parser import GherkinScenarioParser, extractScenarioOulines
@@ -37,6 +39,22 @@ def generateFeatureFile(inputRequirement: str) -> str:
     chain = prompt | llm | outputParser
 
     result = chain.invoke({"SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_REQ_AGENT,
+    "INPUT_REQUIREMENTS": inputRequirement})
+
+    return result
+
+def generateUIFeatureFile(inputRequirement: str) -> str:
+    """Generate UI-specific feature file using UI requirement agent"""
+    
+    prompt = ChatPromptTemplate.from_template(
+        "{SYSTEM_INSTRUCTION}:\n\n{INPUT_REQUIREMENTS}"
+    )
+
+    outputParser = StrOutputParser()
+
+    chain = prompt | llm | outputParser
+
+    result = chain.invoke({"SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_UI_REQ_AGENT,
     "INPUT_REQUIREMENTS": inputRequirement})
 
     return result
@@ -70,6 +88,41 @@ def refineFeatureFileWithFeedback(
     
     result = chain.invoke({
         "SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_FEEDBACK_AGENT,
+        "ORIGINAL_FEATURE_FILE": original_feature_file,
+        "FEEDBACK": combined_feedback
+    })
+    
+    return result
+
+def refineUIFeatureFileWithFeedback(
+    original_feature_file: str,
+    verification_feedback: str = "",
+    user_feedback: str = ""
+) -> str:
+    """Refine existing UI feature file based on feedback"""
+    
+    # Construct feedback context
+    feedback_parts = []
+    
+    if verification_feedback.strip():
+        feedback_parts.append(f"VERIFICATION FEEDBACK:\n{verification_feedback}")
+    
+    if user_feedback.strip():
+        feedback_parts.append(f"USER FEEDBACK:\n{user_feedback}")
+    
+    combined_feedback = "\n\n".join(feedback_parts)
+    
+    prompt = ChatPromptTemplate.from_template(
+        "{SYSTEM_INSTRUCTION}\n\n"
+        "ORIGINAL FEATURE FILE:\n{ORIGINAL_FEATURE_FILE}\n\n"
+        "{FEEDBACK}"
+    )
+    
+    outputParser = StrOutputParser()
+    chain = prompt | llm | outputParser
+    
+    result = chain.invoke({
+        "SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_UI_FEEDBACK_AGENT,
         "ORIGINAL_FEATURE_FILE": original_feature_file,
         "FEEDBACK": combined_feedback
     })
@@ -113,6 +166,26 @@ def generateAutomationScriptsPerScenario(featureFileScenarios: str, userAddition
     for i, scenario in enumerate(featureFileScenarios):
         print(f"#-------------------- Generating Java Code for Scenario {i + 1} -------------------#")
         javaCode = chainAutomation.invoke({"SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_AUTOMATION_AGENT_PER_SCENARIO,
+            "FEATURE_FILE": scenario,
+            "USER_ADDITIONAL_INPUT": userAdditionalInput if userAdditionalInput.strip() else "(No additional user input provided)"})
+        javaCodeFiles.append(javaCode)
+
+    return javaCodeFiles
+
+def generateUIAutomationScriptsPerScenario(featureFileScenarios: str, userAdditionalInput: str = "") -> List[str]:
+    """Generate UI automation scripts (Selenium) for each scenario"""
+    
+    promptAutomationScript = ChatPromptTemplate.from_template(
+        "{SYSTEM_INSTRUCTION}:\n\n{FEATURE_FILE}\n\n{USER_ADDITIONAL_INPUT}"
+    )
+    outputParser = StrOutputParser()
+    chainAutomation = promptAutomationScript | llm | outputParser
+
+    javaCodeFiles = []
+
+    for i, scenario in enumerate(featureFileScenarios):
+        print(f"#-------------------- Generating UI Java Code for Scenario {i + 1} -------------------#")
+        javaCode = chainAutomation.invoke({"SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_UI_AUTOMATION_AGENT_PER_SCENARIO,
             "FEATURE_FILE": scenario,
             "USER_ADDITIONAL_INPUT": userAdditionalInput if userAdditionalInput.strip() else "(No additional user input provided)"})
         javaCodeFiles.append(javaCode)

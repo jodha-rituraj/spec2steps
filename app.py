@@ -1,10 +1,14 @@
 import streamlit as st
 import os
 import sys
+from dotenv import load_dotenv
 
 # ----------------------------
 # Early Configuration Setup
 # ----------------------------
+
+# Load .env file first
+load_dotenv()
 
 # Set environment variable if needed (before importing utils)
 if "GROQ_API_KEY" not in os.environ:
@@ -57,9 +61,20 @@ with st.sidebar:
             st.session_state.api_key_valid = False
     elif os.getenv("GROQ_API_KEY", "").strip():
         st.info("ℹ️ Using API key from .env file")
-        st.session_state.api_key_valid = True
+        # Initialize LLM with .env API key if not already initialized
+        from utils.llm_config import get_llm
+        import utils.utils
+        try:
+            if utils.utils.llm is None:
+                env_key = os.getenv("GROQ_API_KEY")
+                utils.utils.llm = get_llm(env_key)
+            st.session_state.api_key_valid = True
+        except Exception as e:
+            st.error(f"❌ Error loading API key from .env: {str(e)}")
+            st.session_state.api_key_valid = False
     else:
         st.warning("⚠️ No API key configured")
+        st.session_state.api_key_valid = False
 
 # Initialize session state variables
 if 'feature_files' not in st.session_state:
@@ -92,6 +107,27 @@ if 'refactoring_intents' not in st.session_state:
     st.session_state.refactoring_intents = []  # Store intent for each refactoring iteration
 if 'merged_java_history' not in st.session_state:
     st.session_state.merged_java_history = []  # Store history of merged Java files for undo
+if 'test_type' not in st.session_state:
+    st.session_state.test_type = "API"  # Default to API testing
+
+# Test Type Selection
+st.subheader("🎯 Select Test Type")
+test_type = st.radio(
+    "Choose the type of test automation:",
+    options=["API", "UI"],
+    index=0 if st.session_state.test_type == "API" else 1,
+    horizontal=True,
+    help="API: REST API testing with RestAssured | UI: Web UI testing with Selenium WebDriver"
+)
+st.session_state.test_type = test_type
+
+# Show appropriate info based on selection
+if test_type == "API":
+    st.info("📡 **API Testing Mode**: Will generate feature files for REST API testing using RestAssured, Cucumber, and TestNG")
+else:
+    st.info("🌐 **UI Testing Mode**: Will generate feature files for Web UI testing using Selenium WebDriver, Cucumber, and TestNG")
+
+st.divider()
 
 inputRequirement = st.text_area(
     "Enter Requirements File/Text",
@@ -118,11 +154,33 @@ if generateBtn:
             st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
             st.stop()
         
+        # Always reset everything for fresh start when Generate button is clicked
+        st.session_state.feature_files = []
+        st.session_state.verification_outputs = []
+        st.session_state.show_feedback_section = False
+        st.session_state.show_final_edit_section = False
+        st.session_state.show_scripts_section = False
+        st.session_state.java_files = []
+        st.session_state.merged_java_file = None
+        st.session_state.final_feature_file = None
+        st.session_state.user_script_input = ""
+        st.session_state.show_script_feedback_section = False
+        st.session_state.script_diff_outputs = []
+        st.session_state.feedback_counter = 0
+        st.session_state.refactoring_intents = []
+        st.session_state.merged_java_history = []
+        
         st.session_state.input_requirement = inputRequirement
         
-        with st.spinner("Generating Feature File ..."):
-            feature_file = generateFeatureFile(inputRequirement)
-            st.session_state.feature_files.append(feature_file)
+        # Generate based on test type
+        if st.session_state.test_type == "API":
+            with st.spinner("Generating API Feature File ..."):
+                feature_file = generateFeatureFile(inputRequirement)
+                st.session_state.feature_files.append(feature_file)
+        else:  # UI
+            with st.spinner("Generating UI Feature File ..."):
+                feature_file = generateUIFeatureFile(inputRequirement)
+                st.session_state.feature_files.append(feature_file)
         
         with st.spinner("Generating Verification Agent Output ..."):
             verification_output = generateVerificationOutput(
@@ -215,12 +273,19 @@ if st.session_state.show_feedback_section and not st.session_state.show_scripts_
             # Get the latest feature file
             latest_feature_file = st.session_state.feature_files[-1]
             
-            # Use the refinement function instead of regeneration
-            refined_feature_file = refineFeatureFileWithFeedback(
-                original_feature_file = latest_feature_file,
-                verification_feedback = editable_verification,
-                user_feedback = custom_feedback
-            )
+            # Use the refinement function based on test type
+            if st.session_state.test_type == "API":
+                refined_feature_file = refineFeatureFileWithFeedback(
+                    original_feature_file = latest_feature_file,
+                    verification_feedback = editable_verification,
+                    user_feedback = custom_feedback
+                )
+            else:  # UI
+                refined_feature_file = refineUIFeatureFileWithFeedback(
+                    original_feature_file = latest_feature_file,
+                    verification_feedback = editable_verification,
+                    user_feedback = custom_feedback
+                )
             
             # Append the refined version to history
             st.session_state.feature_files.append(refined_feature_file)
@@ -297,19 +362,35 @@ if st.session_state.show_scripts_section:
         # Add user input section BEFORE generating scripts
         st.info("💡 **Optional**: Provide additional context to help generate better automation scripts")
         
+        # Different placeholder text based on test type
+        if st.session_state.test_type == "API":
+            placeholder_text = ("Provide details like:\n"
+                               "- API endpoint patterns or naming conventions\n"
+                               "- Custom data models or utility classes to use\n"
+                               "- Specific validation rules or assertions needed\n"
+                               "- Custom headers, authentication methods, or payload structures\n"
+                               "- Performance or timeout requirements\n"
+                               "- Mock data patterns or test data details\n"
+                               "- Special handling for specific fields or response formats\n"
+                               "- Business logic constraints or domain-specific rules")
+        else:  # UI
+            placeholder_text = ("Provide details like:\n"
+                               "- Page URL patterns or routing conventions\n"
+                               "- Custom Page Object classes or locator strategies\n"
+                               "- Specific element selectors (CSS, XPath, ID patterns)\n"
+                               "- Custom wait strategies or timeout requirements\n"
+                               "- Browser configuration or driver setup details\n"
+                               "- Screenshot capture requirements\n"
+                               "- Custom assertion libraries or validation patterns\n"
+                               "- JavaScript execution requirements\n"
+                               "- Special handling for dynamic elements, iframes, or modals\n"
+                               "- Data-driven test data patterns")
+        
         user_additional_input = st.text_area(
             "Additional Context for Script Generation (Optional):",
             value=st.session_state.user_script_input,
             height=150,
-            placeholder="Provide details like:\n"
-                       "- API endpoint patterns or naming conventions\n"
-                       "- Custom data models or utility classes to use\n"
-                       "- Specific validation rules or assertions needed\n"
-                       "- Custom headers, authentication methods, or payload structures\n"
-                       "- Performance or timeout requirements\n"
-                       "- Mock data patterns or test data details\n"
-                       "- Special handling for specific fields or response formats\n"
-                       "- Business logic constraints or domain-specific rules",
+            placeholder=placeholder_text,
             key="user_script_additional_input"
         )
         
@@ -323,12 +404,21 @@ if st.session_state.show_scripts_section:
                 featureFileScenarios = parser.parse(latest_feature_file)
                 st.success(f"Found {len(featureFileScenarios)} scenario(s)")
             
-            with st.spinner("Generating Automation Scripts for each scenario..."):
-                st.session_state.java_files = generateAutomationScriptsPerScenario(
-                    featureFileScenarios, 
-                    userAdditionalInput=user_additional_input
-                )
-                st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
+            # Generate scripts based on test type
+            if st.session_state.test_type == "API":
+                with st.spinner("Generating API Automation Scripts for each scenario..."):
+                    st.session_state.java_files = generateAutomationScriptsPerScenario(
+                        featureFileScenarios, 
+                        userAdditionalInput=user_additional_input
+                    )
+                    st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
+            else:  # UI
+                with st.spinner("Generating UI Automation Scripts for each scenario..."):
+                    st.session_state.java_files = generateUIAutomationScriptsPerScenario(
+                        featureFileScenarios, 
+                        userAdditionalInput=user_additional_input
+                    )
+                    st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
             
             st.rerun()
     
