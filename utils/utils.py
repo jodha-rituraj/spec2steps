@@ -20,7 +20,11 @@ from features.parser import GherkinScenarioParser, extractScenarioOulines
 from features.merger import JavaFileMerger
 
 # Initialize LLM - will be updated when API key changes
-llm = get_llm()
+# Set to None initially, will be set when user provides API key or .env is loaded
+try:
+    llm = get_llm()
+except ValueError:
+    llm = None
 
 def generateFeatureFile(inputRequirement: str) -> str:
     

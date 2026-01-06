@@ -1,6 +1,17 @@
-from utils.utils import *
 import streamlit as st
 import os
+import sys
+
+# ----------------------------
+# Early Configuration Setup
+# ----------------------------
+
+# Set environment variable if needed (before importing utils)
+if "GROQ_API_KEY" not in os.environ:
+    os.environ["GROQ_API_KEY"] = ""  # Set empty to allow lazy loading
+
+# Now import utils after setting environment
+from utils.utils import *
 
 # ----------------------------
 # Streamlit UI
@@ -23,28 +34,32 @@ with st.sidebar:
         placeholder="gsk_..."
     )
     
-    # Show status of API key
+    # Handle API key initialization
     if api_key_input:
-        st.success("✅ Using provided API key")
-        # Set the API key in environment for this session
-        os.environ["GROQ_API_KEY"] = api_key_input
-        # Reinitialize LLM with new API key
-        from utils.llm_config import get_llm
-        import utils.utils
-        try:
-            new_llm = get_llm(api_key_input)
-            # Update the llm variable in utils module
-            utils.utils.llm = new_llm
-            st.session_state.api_key_valid = True
-        except Exception as e:
-            st.error(f"❌ Invalid API key: {str(e)}")
+        api_key_input = api_key_input.strip()
+        if api_key_input:
+            st.success("✅ Using provided API key")
+            # Set the API key in environment for this session
+            os.environ["GROQ_API_KEY"] = api_key_input
+            # Reinitialize LLM with new API key
+            from utils.llm_config import get_llm
+            import utils.utils
+            try:
+                new_llm = get_llm(api_key_input)
+                # Update the llm variable in utils module
+                utils.utils.llm = new_llm
+                st.session_state.api_key_valid = True
+            except Exception as e:
+                st.error(f"❌ Invalid API key: {str(e)}")
+                st.session_state.api_key_valid = False
+        else:
+            st.warning("⚠️ No API key configured")
             st.session_state.api_key_valid = False
-    elif os.getenv("GROQ_API_KEY"):
+    elif os.getenv("GROQ_API_KEY", "").strip():
         st.info("ℹ️ Using API key from .env file")
         st.session_state.api_key_valid = True
     else:
         st.warning("⚠️ No API key configured")
-        st.session_state.api_key_valid = False
 
 # Initialize session state variables
 if 'feature_files' not in st.session_state:
@@ -97,6 +112,12 @@ if generateBtn:
     if not inputRequirement.strip():
         st.warning("Please enter some text before generating.")
     else:
+        # Check if LLM is initialized
+        import utils.utils
+        if utils.utils.llm is None:
+            st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
+            st.stop()
+        
         st.session_state.input_requirement = inputRequirement
         
         with st.spinner("Generating Feature File ..."):
