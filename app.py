@@ -243,21 +243,24 @@ if st.session_state.show_feedback_section and not st.session_state.show_scripts_
     
     current_version = len(st.session_state.feature_files)
     
-    st.info("💡 **Tip**: Edit the verification output below to keep only the points you want to address. Remove any lines you want to ignore.")
+    st.info("💡 **Tip**: Review the verification output below. You can edit/remove any points you don't want to address, and add your own custom feedback at the end.")
     
-    editable_verification = st.text_area(
-        "Edit Verification Feedback (remove unwanted items):",
-        value=st.session_state.verification_outputs[-1],
-        height=200,
-        key=f"edit_verification_{current_version}",
-        help="Delete or modify lines you don't want to address"
-    )
+    # Combine verification output with space for user feedback
+    combined_feedback_template = f"""VERIFICATION OUTPUT:
+{st.session_state.verification_outputs[-1]}
+
+────────────────────────────────────────────────────
+USER FEEDBACK (Optional - Add your custom feedback below):
+────────────────────────────────────────────────────
+
+"""
     
-    custom_feedback = st.text_area(
-        "Additional custom feedback (optional):",
-        height=150,
-        placeholder="Add any extra instructions... (optional)",
-        key=f"feedback_{current_version}"
+    combined_feedback = st.text_area(
+        "Combined Feedback:",
+        value=combined_feedback_template,
+        height=350,
+        key=f"combined_feedback_{current_version}",
+        help="Verification output is shown first. Edit it if needed, then add your custom feedback below the separator line."
     )
     
     col1, col2 = st.columns(2)
@@ -277,14 +280,14 @@ if st.session_state.show_feedback_section and not st.session_state.show_scripts_
             if st.session_state.test_type == "API":
                 refined_feature_file = refineFeatureFileWithFeedback(
                     original_feature_file = latest_feature_file,
-                    verification_feedback = editable_verification,
-                    user_feedback = custom_feedback
+                    verification_feedback = combined_feedback,
+                    user_feedback = ""
                 )
             else:  # UI
                 refined_feature_file = refineUIFeatureFileWithFeedback(
                     original_feature_file = latest_feature_file,
-                    verification_feedback = editable_verification,
-                    user_feedback = custom_feedback
+                    verification_feedback = combined_feedback,
+                    user_feedback = ""
                 )
             
             # Append the refined version to history
