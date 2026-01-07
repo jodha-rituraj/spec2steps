@@ -38,6 +38,22 @@ with st.sidebar:
         placeholder="gsk_..."
     )
     
+    # Privacy and Key Information
+    st.info("""
+    🔒 **Privacy & Security**
+    
+    - We **don't store or log** any keys, conversations, or prompts
+    - All processing happens in your browser session
+    
+    📝 **Don't have a GROQ API Key?**
+    
+    Visit [Groq Console](https://console.groq.com/keys) to create a free key with limited quota
+    
+    🔐 **Privacy Policy**
+    
+    For Groq APIs privacy details, refer to [Groq Privacy Policy](https://groq.com/privacy-policy)
+    """)
+    
     # Handle API key initialization
     if api_key_input:
         api_key_input = api_key_input.strip()
@@ -130,11 +146,13 @@ else:
 st.divider()
 
 inputRequirement = st.text_area(
-    "Enter Requirements File/Text",
+    "Enter Requirements File/Text/User Input",
     value=st.session_state.input_requirement,
-    height=300,
+    height=100,
     placeholder="Paste raw requirements here..."
 )
+
+st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
 
 generateBtn = st.button("Generate Feature File & Verification")
 
