@@ -21,9 +21,9 @@ from utils.utils import *
 # Streamlit UI
 # ----------------------------
 
-st.set_page_config(page_title="End to End AI Enabled Test Cases Generation and Automation Dashboard", layout="wide")
+st.set_page_config(page_title="End to End AI-Assisted Test Cases & Script Generator", layout="wide")
 
-st.title("End to End AI Enabled Test Cases Generation and Automation Dashboard")
+st.title("End to End AI-Assisted Test Cases & Script Generator")
 
 # ----------------------------
 # Sidebar for API Key Configuration
@@ -91,6 +91,10 @@ with st.sidebar:
     else:
         st.warning("⚠️ No API key configured")
         st.session_state.api_key_valid = False
+    
+    # Version information at bottom of sidebar
+    st.divider()
+    st.caption("🔧 **Version 1.0.0** | Jan 2026")
 
 # Initialize session state variables
 if 'feature_files' not in st.session_state:
