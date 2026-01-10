@@ -147,7 +147,7 @@ if test_type == "API":
 else:
     st.info("🌐 **UI Testing Mode**: Will generate feature files for Web UI testing using Selenium WebDriver, Cucumber, and TestNG")
 
-# st.divider()
+st.divider()
 
 inputRequirement = st.text_area(
     "Enter Requirements File/Text/User Input",
