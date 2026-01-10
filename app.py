@@ -141,6 +141,10 @@ if 'merged_java_history' not in st.session_state:
     st.session_state.merged_java_history = []  # Store history of merged Java files for undo
 if 'test_type' not in st.session_state:
     st.session_state.test_type = "API"  # Default to API testing
+if 'workflow_type' not in st.session_state:
+    st.session_state.workflow_type = "Feature File"  # Default to feature file generation
+if 'direct_feature_file' not in st.session_state:
+    st.session_state.direct_feature_file = ""  # For direct script generation workflow
 
 # Test Type Selection
 st.subheader("🎯 Select Test Type")
@@ -159,21 +163,187 @@ if test_type == "API":
 else:
     st.info("🌐 **UI Testing Mode**: Will generate feature files for Web UI testing using Selenium WebDriver, Cucumber, and TestNG")
 
-st.divider()
+# st.divider()
 
-inputRequirement = st.text_area(
-    "Enter Requirements File/Text/User Input",
-    value=st.session_state.input_requirement,
-    height=150,
-    placeholder="Paste raw requirements here..."
+# Workflow Selection
+st.subheader("🔀 Select Workflow")
+workflow_type = st.radio(
+    "What would you like to generate?",
+    options=["Feature File", "Scripts Only"],
+    index=0 if st.session_state.workflow_type == "Feature File" else 1,
+    horizontal=True,
+    help="Feature File: Generate feature file from requirements first, then scripts | Scripts Only: Generate scripts from an existing feature file"
 )
+st.session_state.workflow_type = workflow_type
 
-st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
+# st.divider()
 
-generateBtn = st.button("Generate Feature File & Verification")
+# =============================================
+# WORKFLOW 1: Feature File Generation (Default)
+# =============================================
+if workflow_type == "Feature File":
+    st.info("📝 **Provide requirements** to generate a feature file. You can paste text or upload a requirements file.")
+    
+    # Option to upload or paste requirements
+    req_input_method = st.radio(
+        "How would you like to provide the requirements?",
+        options=["Paste Content", "Upload File"],
+        horizontal=True,
+        key="req_input_method"
+    )
+    
+    if req_input_method == "Paste Content":
+        inputRequirement = st.text_area(
+            "Enter Requirements File/Text/User Input",
+            value=st.session_state.input_requirement,
+            height=250,
+            placeholder="Paste raw requirements here..."
+        )
+    else:  # Upload File
+        req_uploaded_file = st.file_uploader(
+            "Upload a requirements file",
+            type=["txt", "md", "doc", "docx"],
+            help="Upload a text file containing your requirements",
+            key="req_file_uploader"
+        )
+        if req_uploaded_file is not None:
+            try:
+                # Try to read the file
+                file_content = req_uploaded_file.read()
+                
+                # Try to decode as UTF-8
+                try:
+                    inputRequirement = file_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Try other encodings
+                    try:
+                        inputRequirement = file_content.decode("latin-1")
+                    except:
+                        st.error("❌ **Error**: Unable to read the file. The file encoding is not supported. Please try a UTF-8 encoded text file.")
+                        inputRequirement = ""
+                
+                if inputRequirement:
+                    st.success(f"✅ Loaded file: {req_uploaded_file.name}")
+                    # Show preview
+                    with st.expander("📄 Preview uploaded requirements", expanded=False):
+                        with st.container(height=300):
+                            st.text(inputRequirement)
+            except Exception as e:
+                st.error(f"❌ **Error reading file**: {str(e)}. Please upload a valid text file.")
+                inputRequirement = ""
+        else:
+            inputRequirement = st.session_state.input_requirement
 
-# Stage 1: Generate Feature File and Verification Output
-if generateBtn:
+    st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
+
+    generateBtn = st.button("Generate Feature File & Verification")
+
+# =============================================
+# WORKFLOW 2: Direct Script Generation
+# =============================================
+else:  # Scripts Only
+    st.info("📝 **Provide an existing feature file** to directly generate automation scripts. You can paste the content or upload a `.feature` file.")
+    
+    # Option to upload or paste
+    input_method = st.radio(
+        "How would you like to provide the feature file?",
+        options=["Paste Content", "Upload File"],
+        horizontal=True
+    )
+    
+    if input_method == "Paste Content":
+        direct_feature_input = st.text_area(
+            "Paste your Feature File content:",
+            value=st.session_state.direct_feature_file,
+            height=300,
+            placeholder="Feature: Your feature name\n\n  Scenario: Your scenario\n    Given ...\n    When ...\n    Then ..."
+        )
+    else:  # Upload File
+        uploaded_file = st.file_uploader(
+            "Upload a .feature file",
+            type=["feature", "txt"],
+            help="Upload a Gherkin feature file (.feature or .txt)"
+        )
+        if uploaded_file is not None:
+            try:
+                # Try to read the file
+                file_content = uploaded_file.read()
+                
+                # Try to decode as UTF-8
+                try:
+                    direct_feature_input = file_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Try other encodings
+                    try:
+                        direct_feature_input = file_content.decode("latin-1")
+                    except:
+                        st.error("❌ **Error**: Unable to read the file. The file encoding is not supported. Please try a UTF-8 encoded text file.")
+                        direct_feature_input = ""
+                
+                # Validate it looks like a feature file
+                if direct_feature_input and not any(keyword in direct_feature_input.lower() for keyword in ["feature:", "scenario:", "given", "when", "then"]):
+                    st.warning("⚠️ **Warning**: This file doesn't appear to be a valid Gherkin feature file. It should contain keywords like 'Feature:', 'Scenario:', 'Given', 'When', 'Then'.")
+                
+                if direct_feature_input:
+                    st.success(f"✅ Loaded file: {uploaded_file.name}")
+                    # Show preview
+                    with st.expander("📄 Preview uploaded feature file", expanded=False):
+                        with st.container(height=300):
+                            st.code(direct_feature_input, language="gherkin")
+            except Exception as e:
+                st.error(f"❌ **Error reading file**: {str(e)}. Please upload a valid feature file.")
+                direct_feature_input = ""
+        else:
+            direct_feature_input = st.session_state.direct_feature_file
+    
+    st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
+    
+    generateScriptsDirectBtn = st.button("🚀 Generate Scripts from Feature File", type="primary")
+    
+    # Handle direct script generation
+    if generateScriptsDirectBtn:
+        # Check if API key is valid
+        if not st.session_state.get('api_key_valid', False):
+            st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
+            st.stop()
+        
+        if not direct_feature_input.strip():
+            st.warning("Please provide a feature file before generating scripts.")
+        else:
+            # Check if LLM is initialized
+            import utils.utils
+            if utils.utils.llm is None:
+                st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
+                st.stop()
+            
+            # Reset script-related state
+            st.session_state.java_files = []
+            st.session_state.merged_java_file = None
+            st.session_state.user_script_input = ""
+            st.session_state.show_script_feedback_section = False
+            st.session_state.script_diff_outputs = []
+            st.session_state.feedback_counter = 0
+            st.session_state.refactoring_intents = []
+            st.session_state.merged_java_history = []
+            
+            # Store the feature file
+            st.session_state.direct_feature_file = direct_feature_input
+            st.session_state.feature_files = [direct_feature_input]
+            st.session_state.verification_outputs = ["(Direct script generation - no verification)"]
+            
+            # Go directly to script generation
+            st.session_state.show_scripts_section = True
+            st.session_state.show_feedback_section = False
+            st.session_state.show_final_edit_section = False
+            
+            st.rerun()
+    
+    # Set these to avoid errors in the rest of the code
+    inputRequirement = ""
+    generateBtn = False
+
+# Stage 1: Generate Feature File and Verification Output (only for Feature File workflow)
+if workflow_type == "Feature File" and generateBtn:
     # Check if API key is valid
     if not st.session_state.get('api_key_valid', False):
         st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
@@ -769,4 +939,5 @@ if st.session_state.show_scripts_section:
             st.session_state.feedback_counter = 0
             st.session_state.refactoring_intents = []
             st.session_state.merged_java_history = []
+            st.session_state.direct_feature_file = ""  # Reset direct feature file
             st.rerun()
