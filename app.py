@@ -59,8 +59,8 @@ with st.sidebar:
         api_key_input = api_key_input.strip()
         if api_key_input:
             st.success("✅ Using provided API key")
-            # Set the API key in environment for this session
-            os.environ["GROQ_API_KEY"] = api_key_input
+            # Store API key in session state (NOT in os.environ to prevent cross-user pollution)
+            st.session_state.user_api_key = api_key_input
             # Reinitialize LLM with new API key
             from utils.llm_config import get_llm
             import utils.utils
@@ -74,6 +74,18 @@ with st.sidebar:
                 st.session_state.api_key_valid = False
         else:
             st.warning("⚠️ No API key configured")
+            st.session_state.api_key_valid = False
+    elif st.session_state.get('user_api_key'):
+        # Use previously entered API key from this session
+        st.info("ℹ️ Using API key from current session")
+        from utils.llm_config import get_llm
+        import utils.utils
+        try:
+            if utils.utils.llm is None:
+                utils.utils.llm = get_llm(st.session_state.user_api_key)
+            st.session_state.api_key_valid = True
+        except Exception as e:
+            st.error(f"❌ Error with session API key: {str(e)}")
             st.session_state.api_key_valid = False
     elif os.getenv("GROQ_API_KEY", "").strip():
         st.info("ℹ️ Using API key from .env file")
@@ -228,11 +240,13 @@ if st.session_state.feature_files and st.session_state.verification_outputs:
             st.info(f"🔄 Version {idx}")
         
         st.subheader(f"📋 Generated Feature File {f'(Version {idx})' if len(st.session_state.feature_files) > 1 else ''}")
-        st.code(feature_file, language="gherkin")
+        with st.container(height=800):
+            st.code(feature_file, language="gherkin")
         
         st.divider()
         st.subheader(f"✅ Verification Agent Output {f'(Version {idx})' if len(st.session_state.verification_outputs) > 1 else ''}")
-        st.text(verification_output)
+        with st.container(height=300):
+            st.text(verification_output)
     
     # Only show feedback buttons if neither final edit nor scripts section is shown
     if not st.session_state.show_scripts_section and not st.session_state.show_final_edit_section:
@@ -454,7 +468,8 @@ if st.session_state.show_scripts_section:
         st.subheader("📄 Individual Generated Scripts")
         for i, java_code in enumerate(st.session_state.java_files, 1):
             with st.expander(f"Scenario {i} - Java Code"):
-                st.code(java_code, language="java")
+                with st.container(height=500):
+                    st.code(java_code, language="java")
         
         # Merge Java files first
         st.divider()
@@ -467,7 +482,8 @@ if st.session_state.show_scripts_section:
                 merger = JavaFileMerger(merged_class_name="GeneratedTests")
                 st.session_state.merged_java_file = merger.merge(st.session_state.java_files)
         
-        st.code(st.session_state.merged_java_file, language="java")
+        with st.container(height=800):
+            st.code(st.session_state.merged_java_file, language="java")
         
         # Add feedback section for merged script
         if not st.session_state.show_script_feedback_section:
@@ -514,7 +530,8 @@ if st.session_state.show_scripts_section:
             
             # Show the current merged script in expander
             with st.expander("📄 Current Merged Script (click to expand)", expanded=False):
-                st.code(st.session_state.merged_java_file, language="java")
+                with st.container(height=800):
+                    st.code(st.session_state.merged_java_file, language="java")
             
             # Feedback input
             script_feedback = st.text_area(
@@ -690,12 +707,8 @@ if st.session_state.show_scripts_section:
                         
                         st.markdown("**Changes Made:**")
                         st.info("💡 Lines starting with `-` were removed, lines with `+` were added")
-                        st.code(diff_output, language="diff")
-                
-                st.divider()
-                # Show current script in collapsible section for compact UI
-                with st.expander("✨ Current Merged Script (After All Changes) - Click to View", expanded=False):
-                    st.code(st.session_state.merged_java_file, language="java")
+                        with st.container(height=400):
+                            st.code(diff_output, language="diff")
             
             if done_btn:
                 st.session_state.show_script_feedback_section = False
@@ -735,7 +748,8 @@ if st.session_state.show_scripts_section:
                                 st.markdown(f"**Approach**: {intent_data['approach']}")
                                 st.divider()
                             
-                            st.code(diff, language="diff")
+                            with st.container(height=400):
+                                st.code(diff, language="diff")
         
         # Option to start over (always visible)
         st.divider()
