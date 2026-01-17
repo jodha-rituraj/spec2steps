@@ -8,12 +8,14 @@ from dotenv import load_dotenv
 # Early Configuration Setup
 # ----------------------------
 
-# Load .env file first
-load_dotenv()
+# Load .env file only for local development (not on Streamlit Cloud)
+# Check if running on Streamlit Cloud by checking for STREAMLIT_SHARING environment variable
+# or by checking if we're in a Streamlit deployment
+IS_STREAMLIT_CLOUD = os.getenv("STREAMLIT_SHARING") is not None or os.getenv("STREAMLIT_SHARING_BASE_URL") is not None
 
-# Set environment variable if needed (before importing utils)
-if "GROQ_API_KEY" not in os.environ:
-    os.environ["GROQ_API_KEY"] = ""  # Set empty to allow lazy loading
+if not IS_STREAMLIT_CLOUD:
+    # Only load .env for local development
+    load_dotenv()
 
 # Now import utils after setting environment
 from utils.gherkin_json_utils import json_to_gherkin, gherkin_to_json
@@ -130,11 +132,19 @@ if 'automation_agent' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configuration")
     
+    # For Streamlit Cloud: API key must be entered manually
+    # For local: Can use .env file or enter manually
+    if IS_STREAMLIT_CLOUD:
+        help_text = "Enter your GROQ API key. Required for Streamlit Cloud deployment."
+    else:
+        help_text = "Enter your GROQ API key. Optional if set in .env file (local development only)."
+    
     api_key_input = st.text_input(
-        "GROQ API Key (Optional)",
+        "GROQ API Key",
         type="password",
-        help="Enter your GROQ API key. If not provided, will use key from .env file.",
-        placeholder="gsk_..."
+        help=help_text,
+        placeholder="gsk_...",
+        value=""  # Always start empty - don't pre-fill from session
     )
     
     # Privacy and Key Information
@@ -154,56 +164,51 @@ with st.sidebar:
     """)
     
     # Handle API key initialization
-    if api_key_input:
-        api_key_input = api_key_input.strip()
-        if api_key_input:
-            st.success("✅ Using provided API key")
-            # Store API key in session state (NOT in os.environ to prevent cross-user pollution)
-            st.session_state.user_api_key = api_key_input
-            # Reinitialize LLM with new API key
-            from utils.llm_config import get_llm
-            try:
-                new_llm = get_llm(api_key_input)
-                # Update all agents with new LLM
-                st.session_state.requirement_agent.update_llm(new_llm)
-                st.session_state.verification_agent.update_llm(new_llm)
-                st.session_state.automation_agent.update_llm(new_llm)
-                st.session_state.api_key_valid = True
-            except Exception as e:
-                st.error(f"❌ Invalid API key: {str(e)}")
-                st.session_state.api_key_valid = False
-        else:
-            st.warning("⚠️ No API key configured")
-            st.session_state.api_key_valid = False
+    # Priority: 1) User input (sidebar) > 2) Session state (if explicitly set) > 3) .env (local only)
+    
+    api_key_to_use = None
+    key_source = None
+    
+    if api_key_input and api_key_input.strip():
+        # User entered key in sidebar - use it and store in session
+        api_key_to_use = api_key_input.strip()
+        key_source = "sidebar"
+        st.session_state.user_api_key = api_key_to_use  # Store for this session
+        st.success("✅ Using provided API key")
     elif st.session_state.get('user_api_key'):
-        # Use previously entered API key from this session
+        # Use previously entered API key from this session (user already entered it)
+        api_key_to_use = st.session_state.user_api_key
+        key_source = "session"
         st.info("ℹ️ Using API key from current session")
-        from utils.llm_config import get_llm
-        try:
-            new_llm = get_llm(st.session_state.user_api_key)
-            st.session_state.requirement_agent.update_llm(new_llm)
-            st.session_state.verification_agent.update_llm(new_llm)
-            st.session_state.automation_agent.update_llm(new_llm)
-            st.session_state.api_key_valid = True
-        except Exception as e:
-            st.error(f"❌ Error with session API key: {str(e)}")
-            st.session_state.api_key_valid = False
-    elif os.getenv("GROQ_API_KEY", "").strip():
-        st.info("ℹ️ Using API key from .env file")
-        # Initialize LLM with .env API key if not already initialized
-        from utils.llm_config import get_llm
-        try:
-            env_key = os.getenv("GROQ_API_KEY")
-            new_llm = get_llm(env_key)
-            st.session_state.requirement_agent.update_llm(new_llm)
-            st.session_state.verification_agent.update_llm(new_llm)
-            st.session_state.automation_agent.update_llm(new_llm)
-            st.session_state.api_key_valid = True
-        except Exception as e:
-            st.error(f"❌ Error loading API key from .env: {str(e)}")
-            st.session_state.api_key_valid = False
+    elif not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY", "").strip():
+        # Only check .env file for local development (not on Streamlit Cloud)
+        api_key_to_use = os.getenv("GROQ_API_KEY").strip()
+        key_source = ".env"
+        st.info("ℹ️ Using API key from .env file (local development)")
+        # Don't store .env key in session state for security
     else:
-        st.warning("⚠️ No API key configured")
+        # No API key available
+        api_key_to_use = None
+        key_source = None
+        st.warning("⚠️ No API key configured. Please enter your GROQ API key above.")
+    
+    # Initialize LLM with the selected API key
+    if api_key_to_use:
+        from utils.llm_config import get_llm
+        try:
+            new_llm = get_llm(api_key_to_use)
+            # Update all agents with new LLM
+            st.session_state.requirement_agent.update_llm(new_llm)
+            st.session_state.verification_agent.update_llm(new_llm)
+            st.session_state.automation_agent.update_llm(new_llm)
+            st.session_state.api_key_valid = True
+        except Exception as e:
+            st.error(f"❌ Invalid API key: {str(e)}")
+            st.session_state.api_key_valid = False
+            # Clear invalid key from session
+            if key_source == "sidebar" or key_source == "session":
+                st.session_state.user_api_key = None
+    else:
         st.session_state.api_key_valid = False
     
     # Version information at bottom of sidebar

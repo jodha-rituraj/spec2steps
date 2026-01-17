@@ -40,11 +40,11 @@ def get_llm(api_key=None, include_reasoning=True, reasoning_effort="medium"):
         raise ValueError(
             "❌ No GROQ API key found! Please either:\n"
             "1. Enter your API key in the sidebar, or\n"
-            "2. Set GROQ_API_KEY in your .env file"
+            "2. Set GROQ_API_KEY in your .env file (local development only)"
         )
     
-    # Set environment variable for this session
-    os.environ["GROQ_API_KEY"] = groq_api_key
+    # Don't set os.environ - pass key directly to ChatGroq to avoid security issues
+    # Setting os.environ could leak keys across different parts of the application
     
     # Build ChatGroq with reasoning support for GPT-OSS models
     # Use reasoning_effort parameter (reasoning returned in additional_kwargs['reasoning_content'])
