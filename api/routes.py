@@ -32,6 +32,7 @@ from utils.utils import (
     generateVerificationOutput,
     generateAutomationScriptsPerScenario
 )
+from utils.gherkin_json_utils import json_to_gherkin, gherkin_to_json
 from features.parser import GherkinScenarioParser
 from features.merger import JavaFileMerger
 
@@ -69,8 +70,11 @@ async def generate_feature(request: GenerateFeatureRequest):
                 detail="Requirement text cannot be empty"
             )
         
-        # Generate feature file using existing function
-        feature_file = generateFeatureFile(request.requirement)
+        # Generate feature file as JSON using existing function
+        feature_json = generateFeatureFile(request.requirement)
+        
+        # Convert JSON to Gherkin text for API response
+        feature_file = json_to_gherkin(feature_json)
         
         logger.info("Feature file generated successfully")
         
@@ -120,10 +124,13 @@ async def verify_feature(request: VerifyFeatureRequest):
                 detail="Requirement text cannot be empty"
             )
         
+        # Convert Gherkin to JSON for verification
+        feature_json = gherkin_to_json(request.feature_file)
+        
         # Verify feature file using existing function
         verification_output = generateVerificationOutput(
-            request.feature_file,
-            request.requirement
+            request.requirement,
+            feature_json
         )
         
         logger.info("Feature file verified successfully")
@@ -177,13 +184,16 @@ async def regenerate_feature(request: RegenerateFeatureRequest):
                 f"FEEDBACK FROM VERIFICATION (USER EDITED):\n{request.verification_feedback}"
             )
         
-        # Generate new feature file
-        new_feature_file = generateFeatureFile(enhanced_requirement)
+        # Generate new feature file as JSON
+        new_feature_json = generateFeatureFile(enhanced_requirement)
+        
+        # Convert to Gherkin for response
+        new_feature_file = json_to_gherkin(new_feature_json)
         
         # Generate new verification output
         new_verification = generateVerificationOutput(
-            new_feature_file,
-            enhanced_requirement
+            enhanced_requirement,
+            new_feature_json
         )
         
         logger.info("Feature file regenerated successfully")
@@ -229,9 +239,11 @@ async def generate_scripts(request: GenerateScriptsRequest):
                 detail="Feature file cannot be empty"
             )
         
-        # Parse feature file into scenarios
-        parser = GherkinScenarioParser()
-        scenarios = parser.parse(request.feature_file)
+        # Convert Gherkin to JSON
+        feature_json = gherkin_to_json(request.feature_file)
+        
+        # Count scenarios from JSON
+        scenarios = feature_json.get("scenarios", [])
         
         if not scenarios:
             raise HTTPException(
@@ -241,8 +253,8 @@ async def generate_scripts(request: GenerateScriptsRequest):
         
         logger.info(f"Found {len(scenarios)} scenario(s)")
         
-        # Generate Java files for each scenario
-        java_files = generateAutomationScriptsPerScenario(scenarios)
+        # Generate Java files (function handles JSON to Gherkin conversion internally)
+        java_files = generateAutomationScriptsPerScenario(feature_json)
         
         logger.info(f"Generated {len(java_files)} Java file(s)")
         

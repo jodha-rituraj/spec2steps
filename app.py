@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import sys
+import difflib
 from dotenv import load_dotenv
 
 # ----------------------------
@@ -15,7 +16,10 @@ if "GROQ_API_KEY" not in os.environ:
     os.environ["GROQ_API_KEY"] = ""  # Set empty to allow lazy loading
 
 # Now import utils after setting environment
-from utils.utils import *
+from utils.gherkin_json_utils import json_to_gherkin, gherkin_to_json
+
+# Import agent classes
+from agents import RequirementAgent, VerificationAgent, AutomationScriptAgent
 
 # ----------------------------
 # Streamlit UI
@@ -24,6 +28,101 @@ from utils.utils import *
 st.set_page_config(page_title="End to End AI-Assisted Test Cases & Script Generator", layout="wide")
 
 st.title("End to End AI-Assisted Test Cases & Script Generator")
+
+# ----------------------------
+# Initialize session state variables FIRST (before sidebar)
+# ----------------------------
+if 'feature_files' not in st.session_state:
+    st.session_state.feature_files = []  # List to store all versions
+if 'verification_outputs' not in st.session_state:
+    st.session_state.verification_outputs = []  # List to store all versions
+if 'input_requirement' not in st.session_state:
+    st.session_state.input_requirement = ""
+if 'show_feedback_section' not in st.session_state:
+    st.session_state.show_feedback_section = False
+if 'show_final_edit_section' not in st.session_state:
+    st.session_state.show_final_edit_section = False
+if 'show_scripts_section' not in st.session_state:
+    st.session_state.show_scripts_section = False
+if 'java_files' not in st.session_state:
+    st.session_state.java_files = []
+if 'merged_java_file' not in st.session_state:
+    st.session_state.merged_java_file = None
+# JSON IR for scripts (new deterministic approach)
+if 'script_jsons' not in st.session_state:
+    st.session_state.script_jsons = []  # List of script JSON objects
+if 'merged_script_json' not in st.session_state:
+    st.session_state.merged_script_json = None  # Merged script JSON
+if 'use_json_ir' not in st.session_state:
+    st.session_state.use_json_ir = True  # Use JSON IR by default
+if 'final_feature_file' not in st.session_state:
+    st.session_state.final_feature_file = None
+if 'user_script_input' not in st.session_state:
+    st.session_state.user_script_input = ""
+if 'show_script_feedback_section' not in st.session_state:
+    st.session_state.show_script_feedback_section = False
+if 'script_diff_outputs' not in st.session_state:
+    st.session_state.script_diff_outputs = []  # Store diff outputs for each script
+if 'feedback_counter' not in st.session_state:
+    st.session_state.feedback_counter = 0  # Counter to reset feedback input
+if 'refactoring_intents' not in st.session_state:
+    st.session_state.refactoring_intents = []  # Store intent for each refactoring iteration
+if 'merged_java_history' not in st.session_state:
+    st.session_state.merged_java_history = []  # Store history of merged Java files for undo
+if 'test_type' not in st.session_state:
+    st.session_state.test_type = "API"  # Default to API testing
+if 'workflow_type' not in st.session_state:
+    st.session_state.workflow_type = "Feature File"  # Default to feature file generation
+if 'direct_feature_file' not in st.session_state:
+    st.session_state.direct_feature_file = ""  # For direct script generation workflow
+
+# ----------------------------
+# Chat-based refinement session state variables
+# ----------------------------
+if 'chat_messages' not in st.session_state:
+    st.session_state.chat_messages = []  # List of {role: 'user'/'assistant', content: str}
+if 'proposed_feature_json' not in st.session_state:
+    st.session_state.proposed_feature_json = None  # Proposed changes from LLM
+if 'proposed_explanation' not in st.session_state:
+    st.session_state.proposed_explanation = ""  # Explanation for proposed changes
+if 'current_feature_version_index' not in st.session_state:
+    st.session_state.current_feature_version_index = 0  # Index of currently displayed feature file version
+if 'include_verification_in_chat' not in st.session_state:
+    st.session_state.include_verification_in_chat = False  # Checkbox for including verification output
+if 'show_chat_refinement' not in st.session_state:
+    st.session_state.show_chat_refinement = False  # Whether to show chat refinement UI
+if 'awaiting_confirmation' not in st.session_state:
+    st.session_state.awaiting_confirmation = False  # Whether we're waiting for user to apply/reject changes
+
+# ----------------------------
+# Script chat-based refinement session state variables
+# ----------------------------
+if 'script_chat_messages' not in st.session_state:
+    st.session_state.script_chat_messages = []  # Chat messages for script refinement
+if 'proposed_script' not in st.session_state:
+    st.session_state.proposed_script = None  # Proposed script changes from LLM
+if 'proposed_script_json' not in st.session_state:
+    st.session_state.proposed_script_json = None  # Proposed script JSON IR
+if 'script_proposed_explanation' not in st.session_state:
+    st.session_state.script_proposed_explanation = ""  # Explanation for proposed script changes
+if 'script_reasoning' not in st.session_state:
+    st.session_state.script_reasoning = ""  # LLM's thinking/reasoning tokens
+if 'script_awaiting_confirmation' not in st.session_state:
+    st.session_state.script_awaiting_confirmation = False  # Waiting for user to apply/reject script changes
+if 'script_versions' not in st.session_state:
+    st.session_state.script_versions = []  # History of script versions for version navigation
+if 'current_script_version_index' not in st.session_state:
+    st.session_state.current_script_version_index = 0  # Index of currently displayed script version
+if 'script_feedback_counter' not in st.session_state:
+    st.session_state.script_feedback_counter = 0  # Counter to reset script feedback input
+
+# Initialize agents in session state (BEFORE sidebar uses them)
+if 'requirement_agent' not in st.session_state:
+    st.session_state.requirement_agent = RequirementAgent()
+if 'verification_agent' not in st.session_state:
+    st.session_state.verification_agent = VerificationAgent()
+if 'automation_agent' not in st.session_state:
+    st.session_state.automation_agent = AutomationScriptAgent()
 
 # ----------------------------
 # Sidebar for API Key Configuration
@@ -63,11 +162,12 @@ with st.sidebar:
             st.session_state.user_api_key = api_key_input
             # Reinitialize LLM with new API key
             from utils.llm_config import get_llm
-            import utils.utils
             try:
                 new_llm = get_llm(api_key_input)
-                # Update the llm variable in utils module
-                utils.utils.llm = new_llm
+                # Update all agents with new LLM
+                st.session_state.requirement_agent.update_llm(new_llm)
+                st.session_state.verification_agent.update_llm(new_llm)
+                st.session_state.automation_agent.update_llm(new_llm)
                 st.session_state.api_key_valid = True
             except Exception as e:
                 st.error(f"❌ Invalid API key: {str(e)}")
@@ -79,10 +179,11 @@ with st.sidebar:
         # Use previously entered API key from this session
         st.info("ℹ️ Using API key from current session")
         from utils.llm_config import get_llm
-        import utils.utils
         try:
-            if utils.utils.llm is None:
-                utils.utils.llm = get_llm(st.session_state.user_api_key)
+            new_llm = get_llm(st.session_state.user_api_key)
+            st.session_state.requirement_agent.update_llm(new_llm)
+            st.session_state.verification_agent.update_llm(new_llm)
+            st.session_state.automation_agent.update_llm(new_llm)
             st.session_state.api_key_valid = True
         except Exception as e:
             st.error(f"❌ Error with session API key: {str(e)}")
@@ -91,11 +192,12 @@ with st.sidebar:
         st.info("ℹ️ Using API key from .env file")
         # Initialize LLM with .env API key if not already initialized
         from utils.llm_config import get_llm
-        import utils.utils
         try:
-            if utils.utils.llm is None:
-                env_key = os.getenv("GROQ_API_KEY")
-                utils.utils.llm = get_llm(env_key)
+            env_key = os.getenv("GROQ_API_KEY")
+            new_llm = get_llm(env_key)
+            st.session_state.requirement_agent.update_llm(new_llm)
+            st.session_state.verification_agent.update_llm(new_llm)
+            st.session_state.automation_agent.update_llm(new_llm)
             st.session_state.api_key_valid = True
         except Exception as e:
             st.error(f"❌ Error loading API key from .env: {str(e)}")
@@ -106,45 +208,7 @@ with st.sidebar:
     
     # Version information at bottom of sidebar
     st.divider()
-    st.caption("🔧 **Version 1.0.0** | Jan 2026")
-
-# Initialize session state variables
-if 'feature_files' not in st.session_state:
-    st.session_state.feature_files = []  # List to store all versions
-if 'verification_outputs' not in st.session_state:
-    st.session_state.verification_outputs = []  # List to store all versions
-if 'input_requirement' not in st.session_state:
-    st.session_state.input_requirement = ""
-if 'show_feedback_section' not in st.session_state:
-    st.session_state.show_feedback_section = False
-if 'show_final_edit_section' not in st.session_state:
-    st.session_state.show_final_edit_section = False
-if 'show_scripts_section' not in st.session_state:
-    st.session_state.show_scripts_section = False
-if 'java_files' not in st.session_state:
-    st.session_state.java_files = []
-if 'merged_java_file' not in st.session_state:
-    st.session_state.merged_java_file = None
-if 'final_feature_file' not in st.session_state:
-    st.session_state.final_feature_file = None
-if 'user_script_input' not in st.session_state:
-    st.session_state.user_script_input = ""
-if 'show_script_feedback_section' not in st.session_state:
-    st.session_state.show_script_feedback_section = False
-if 'script_diff_outputs' not in st.session_state:
-    st.session_state.script_diff_outputs = []  # Store diff outputs for each script
-if 'feedback_counter' not in st.session_state:
-    st.session_state.feedback_counter = 0  # Counter to reset feedback input
-if 'refactoring_intents' not in st.session_state:
-    st.session_state.refactoring_intents = []  # Store intent for each refactoring iteration
-if 'merged_java_history' not in st.session_state:
-    st.session_state.merged_java_history = []  # Store history of merged Java files for undo
-if 'test_type' not in st.session_state:
-    st.session_state.test_type = "API"  # Default to API testing
-if 'workflow_type' not in st.session_state:
-    st.session_state.workflow_type = "Feature File"  # Default to feature file generation
-if 'direct_feature_file' not in st.session_state:
-    st.session_state.direct_feature_file = ""  # For direct script generation workflow
+    st.caption("🔧 **Version 2.0.0** | Jan 2026")
 
 # Test Type Selection
 st.subheader("🎯 Select Test Type")
@@ -193,7 +257,7 @@ if workflow_type == "Feature File":
     )
     
     if req_input_method == "Paste Content":
-        inputRequirement = st.text_area(
+        input_requirement = st.text_area(
             "Enter Requirements File/Text/User Input",
             value=st.session_state.input_requirement,
             height=250,
@@ -213,30 +277,30 @@ if workflow_type == "Feature File":
                 
                 # Try to decode as UTF-8
                 try:
-                    inputRequirement = file_content.decode("utf-8")
+                    input_requirement = file_content.decode("utf-8")
                 except UnicodeDecodeError:
                     # Try other encodings
                     try:
-                        inputRequirement = file_content.decode("latin-1")
+                        input_requirement = file_content.decode("latin-1")
                     except:
                         st.error("❌ **Error**: Unable to read the file. The file encoding is not supported. Please try a UTF-8 encoded text file.")
-                        inputRequirement = ""
+                        input_requirement = ""
                 
-                if inputRequirement:
+                if input_requirement:
                     st.success(f"✅ Loaded file: {req_uploaded_file.name}")
                     # Show preview
                     with st.expander("📄 Preview uploaded requirements", expanded=False):
                         with st.container(height=300):
-                            st.text(inputRequirement)
+                            st.text(input_requirement)
             except Exception as e:
                 st.error(f"❌ **Error reading file**: {str(e)}. Please upload a valid text file.")
-                inputRequirement = ""
+                input_requirement = ""
         else:
-            inputRequirement = st.session_state.input_requirement
+            input_requirement = st.session_state.input_requirement
 
     st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
 
-    generateBtn = st.button("Generate Feature File & Verification")
+    generate_btn = st.button("Generate Feature File & Verification")
 
 # =============================================
 # WORKFLOW 2: Direct Script Generation
@@ -298,10 +362,10 @@ else:  # Scripts Only
     
     st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
     
-    generateScriptsDirectBtn = st.button("🚀 Generate Scripts from Feature File", type="primary")
+    generate_scripts_btn = st.button("🚀 Generate Scripts from Feature File", type="primary")
     
     # Handle direct script generation
-    if generateScriptsDirectBtn:
+    if generate_scripts_btn:
         # Check if API key is valid
         if not st.session_state.get('api_key_valid', False):
             st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
@@ -326,9 +390,12 @@ else:  # Scripts Only
             st.session_state.refactoring_intents = []
             st.session_state.merged_java_history = []
             
-            # Store the feature file
+            # Store the feature file - convert Gherkin to JSON
+            from utils.gherkin_json_utils import gherkin_to_json
+            direct_feature_json = gherkin_to_json(direct_feature_input)
+            
             st.session_state.direct_feature_file = direct_feature_input
-            st.session_state.feature_files = [direct_feature_input]
+            st.session_state.feature_files = [direct_feature_json]
             st.session_state.verification_outputs = ["(Direct script generation - no verification)"]
             
             # Go directly to script generation
@@ -339,22 +406,21 @@ else:  # Scripts Only
             st.rerun()
     
     # Set these to avoid errors in the rest of the code
-    inputRequirement = ""
-    generateBtn = False
+    input_requirement = ""
+    generate_btn = False
 
 # Stage 1: Generate Feature File and Verification Output (only for Feature File workflow)
-if workflow_type == "Feature File" and generateBtn:
+if workflow_type == "Feature File" and generate_btn:
     # Check if API key is valid
     if not st.session_state.get('api_key_valid', False):
         st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
         st.stop()
     
-    if not inputRequirement.strip():
+    if not input_requirement.strip():
         st.warning("Please enter some text before generating.")
     else:
         # Check if LLM is initialized
-        import utils.utils
-        if utils.utils.llm is None:
+        if not st.session_state.api_key_valid:
             st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
             st.stop()
         
@@ -374,146 +440,302 @@ if workflow_type == "Feature File" and generateBtn:
         st.session_state.refactoring_intents = []
         st.session_state.merged_java_history = []
         
-        st.session_state.input_requirement = inputRequirement
+        st.session_state.input_requirement = input_requirement
         
-        # Generate based on test type
+        # Generate based on test type using agents
         if st.session_state.test_type == "API":
             with st.spinner("Generating API Feature File ..."):
-                feature_file = generateFeatureFile(inputRequirement)
-                st.session_state.feature_files.append(feature_file)
+                feature_json = st.session_state.requirement_agent.generate_api_feature_file(input_requirement)
+                st.session_state.feature_files.append(feature_json)
         else:  # UI
             with st.spinner("Generating UI Feature File ..."):
-                feature_file = generateUIFeatureFile(inputRequirement)
-                st.session_state.feature_files.append(feature_file)
+                feature_json = st.session_state.requirement_agent.generate_ui_feature_file(input_requirement)
+                st.session_state.feature_files.append(feature_json)
         
         with st.spinner("Generating Verification Agent Output ..."):
-            verification_output = generateVerificationOutput(
-                feature_file, 
-                inputRequirement
+            verification_output = st.session_state.verification_agent.verify_feature_file(
+                input_requirement,
+                st.session_state.feature_files[-1]
             )
             st.session_state.verification_outputs.append(verification_output)
         
         st.session_state.show_feedback_section = False
         st.session_state.show_final_edit_section = False
         st.session_state.show_scripts_section = False
+        # Reset chat state for new generation
+        st.session_state.chat_messages = []
+        st.session_state.proposed_feature_json = None
+        st.session_state.proposed_explanation = ""
+        st.session_state.current_feature_version_index = 0
+        st.session_state.show_chat_refinement = True
+        st.session_state.awaiting_confirmation = False
         st.rerun()
 
-# Always show ALL Feature Files and Verification Outputs if they exist
-if st.session_state.feature_files and st.session_state.verification_outputs:
+# =============================================
+# Feature File Display with Chat Refinement
+# =============================================
+if st.session_state.feature_files and st.session_state.verification_outputs and not st.session_state.show_scripts_section:
     
-    # Display all versions
-    for idx, (feature_file, verification_output) in enumerate(zip(st.session_state.feature_files, st.session_state.verification_outputs), 1):
-        st.divider()
-        
-        # Show version number
-        if len(st.session_state.feature_files) > 1:
-            st.info(f"🔄 Version {idx}")
-        
-        st.subheader(f"📋 Generated Feature File {f'(Version {idx})' if len(st.session_state.feature_files) > 1 else ''}")
-        with st.container(height=800):
-            st.code(feature_file, language="gherkin")
-        
-        st.divider()
-        st.subheader(f"✅ Verification Agent Output {f'(Version {idx})' if len(st.session_state.verification_outputs) > 1 else ''}")
-        with st.container(height=300):
-            st.text(verification_output)
-    
-    # Only show feedback buttons if neither final edit nor scripts section is shown
-    if not st.session_state.show_scripts_section and not st.session_state.show_final_edit_section:
-        st.divider()
-        st.subheader("🔄 Provide Feedback")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            reject_btn = st.button("❌ Reject - Regenerate Feature File", use_container_width=True)
-        
-        with col2:
-            accept_btn = st.button("✅ Accept - Proceed to Final Review", use_container_width=True)
-        
-        # If user rejects (wants to regenerate)
-        if reject_btn:
-            st.session_state.show_feedback_section = True
-            st.rerun()
-        
-        # If user accepts (proceed to final edit/review)
-        if accept_btn:
-            st.session_state.show_final_edit_section = True
-            st.session_state.show_feedback_section = False
-            st.rerun()
-
-# Show Feedback Section if user clicked Reject
-if st.session_state.show_feedback_section and not st.session_state.show_scripts_section:
     st.divider()
-    st.subheader("📝 Customize Feedback for Regeneration")
     
-    current_version = len(st.session_state.feature_files)
+    # Create two-column layout: Main content (feature file) | Chat sidebar
+    main_col, chat_col = st.columns([2, 1])
     
-    st.info("💡 **Tip**: Review the verification output below. You can edit/remove any points you don't want to address, and add your own custom feedback at the end.")
-    
-    # Combine verification output with space for user feedback
-    combined_feedback_template = f"""VERIFICATION OUTPUT:
-{st.session_state.verification_outputs[-1]}
-
-────────────────────────────────────────────────────
-USER FEEDBACK (Optional - Add your custom feedback below):
-────────────────────────────────────────────────────
-
-"""
-    
-    combined_feedback = st.text_area(
-        "Combined Feedback:",
-        value=combined_feedback_template,
-        height=350,
-        key=f"combined_feedback_{current_version}",
-        help="Verification output is shown first. Edit it if needed, then add your custom feedback below the separator line."
-    )
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        regenerate_btn = st.button("🔄 Regenerate Feature File", use_container_width=True)
-    
-    with col2:
-        skip_feedback_btn = st.button("⏭️ Skip & Proceed to Scripts", use_container_width=True)
-    
-    if regenerate_btn:
-        with st.spinner("Refining Feature File based on feedback..."):
-            # Get the latest feature file
-            latest_feature_file = st.session_state.feature_files[-1]
-            
-            # Use the refinement function based on test type
-            if st.session_state.test_type == "API":
-                refined_feature_file = refineFeatureFileWithFeedback(
-                    original_feature_file = latest_feature_file,
-                    verification_feedback = combined_feedback,
-                    user_feedback = ""
-                )
-            else:  # UI
-                refined_feature_file = refineUIFeatureFileWithFeedback(
-                    original_feature_file = latest_feature_file,
-                    verification_feedback = combined_feedback,
-                    user_feedback = ""
-                )
-            
-            # Append the refined version to history
-            st.session_state.feature_files.append(refined_feature_file)
-            
-            # Generate new verification output for the refined file
-            new_verification = generateVerificationOutput(
-                refined_feature_file,
-                st.session_state.input_requirement
-            )
-            st.session_state.verification_outputs.append(new_verification)
-            
-            st.session_state.show_feedback_section = False
+    with main_col:
+        # Version navigation header
+        total_versions = len(st.session_state.feature_files)
         
-        st.rerun()
+        # Ensure index is valid
+        if st.session_state.current_feature_version_index >= total_versions:
+            st.session_state.current_feature_version_index = total_versions - 1
+        if st.session_state.current_feature_version_index < 0:
+            st.session_state.current_feature_version_index = 0
+        
+        current_idx = st.session_state.current_feature_version_index
+        
+        # Version navigation with arrows
+        st.subheader("📋 Generated Feature File")
+        
+        nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+        
+        with nav_col1:
+            if st.button("◀ Previous", disabled=(current_idx == 0), use_container_width=True, key="prev_version"):
+                st.session_state.current_feature_version_index -= 1
+                st.rerun()
+        
+        with nav_col2:
+            st.markdown(f"<h4 style='text-align: center;'>Version {current_idx + 1} of {total_versions}</h4>", unsafe_allow_html=True)
+        
+        with nav_col3:
+            if st.button("Next ▶", disabled=(current_idx == total_versions - 1), use_container_width=True, key="next_version"):
+                st.session_state.current_feature_version_index += 1
+                st.rerun()
+        
+        # Display current version feature file
+        current_feature_json = st.session_state.feature_files[current_idx]
+        feature_file_text = json_to_gherkin(current_feature_json)
+        
+        with st.container(height=600):
+            st.code(feature_file_text, language="gherkin")
+        
+        # Verification Output section with toggle
+        st.divider()
+        
+        verification_col1, verification_col2 = st.columns([3, 1])
+        with verification_col1:
+            st.subheader("✅ Verification Agent Output")
+        with verification_col2:
+            include_verification = st.checkbox(
+                "Include in chat",
+                value=st.session_state.include_verification_in_chat,
+                key="include_verification_checkbox",
+                help="Check this to include verification feedback in your chat messages"
+            )
+            st.session_state.include_verification_in_chat = include_verification
+        
+        current_verification = st.session_state.verification_outputs[current_idx]
+        with st.expander("View Verification Output", expanded=False):
+            with st.container(height=200):
+                st.text(current_verification)
+        
+        # Action buttons
+        st.divider()
+        
+        action_col1, action_col2 = st.columns(2)
+        with action_col1:
+            if st.button("✅ Accept & Proceed to Scripts", use_container_width=True, type="primary"):
+                st.session_state.show_final_edit_section = True
+                st.session_state.show_chat_refinement = False
+                st.rerun()
+        with action_col2:
+            # Download current version
+            st.download_button(
+                label="📥 Download Feature File",
+                data=feature_file_text,
+                file_name=f"feature_v{current_idx + 1}.feature",
+                mime="text/plain",
+                use_container_width=True
+            )
     
-    if skip_feedback_btn:
-        st.session_state.show_final_edit_section = True
-        st.session_state.show_feedback_section = False
-        st.rerun()
+    # Chat sidebar - fixed height container with scrollable messages
+    with chat_col:
+        st.subheader("💬 Refine with Chat")
+        
+        # Fixed-height scrollable chat container
+        chat_container = st.container(height=600)
+        with chat_container:
+            if not st.session_state.chat_messages:
+                st.info("👋 Start a conversation! Ask questions or describe changes you'd like to make.")
+            
+            # Display chat messages using st.chat_message for nice styling
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+        
+        # Show proposed changes if awaiting confirmation (outside the scrollable area)
+        if st.session_state.awaiting_confirmation and st.session_state.proposed_feature_json:
+            st.warning("📝 **Proposed Changes Ready - Review and Apply?**")
+            
+            with st.expander("View Proposed Changes (Diff)", expanded=True):
+                proposed_text = json_to_gherkin(st.session_state.proposed_feature_json)
+                
+                # Get current feature text for diff
+                if st.session_state.feature_files:
+                    current_feature_json = st.session_state.feature_files[st.session_state.current_feature_version_index]
+                    current_text = json_to_gherkin(current_feature_json)
+                else:
+                    current_text = ""
+                
+                # Generate unified diff
+                current_lines = current_text.splitlines(keepends=True)
+                proposed_lines = proposed_text.splitlines(keepends=True)
+                
+                diff_lines = list(difflib.unified_diff(
+                    current_lines,
+                    proposed_lines,
+                    fromfile='Current Version',
+                    tofile='Proposed Version',
+                    lineterm=''
+                ))
+                
+                if diff_lines:
+                    # Display diff with syntax highlighting
+                    diff_text = ''.join(diff_lines)
+                    st.code(diff_text, language="diff")
+                else:
+                    st.info("No differences detected between current and proposed versions.")
+                    st.code(proposed_text, language="gherkin")
+            
+            confirm_col1, confirm_col2 = st.columns(2)
+            with confirm_col1:
+                if st.button("✅ Apply", use_container_width=True, type="primary", key="apply_changes"):
+                    # Apply the proposed changes
+                    st.session_state.feature_files.append(st.session_state.proposed_feature_json)
+                    
+                    # Generate new verification output
+                    with st.spinner("Generating verification..."):
+                        new_verification = st.session_state.verification_agent.verify_feature_file(
+                            st.session_state.input_requirement,
+                            st.session_state.proposed_feature_json
+                        )
+                    st.session_state.verification_outputs.append(new_verification)
+                    
+                    # Update version index to latest
+                    st.session_state.current_feature_version_index = len(st.session_state.feature_files) - 1
+                    
+                    # Add confirmation to chat
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": "✅ Changes applied! The feature file has been updated to a new version."
+                    })
+                    
+                    # Reset proposal state
+                    st.session_state.proposed_feature_json = None
+                    st.session_state.proposed_explanation = ""
+                    st.session_state.awaiting_confirmation = False
+                    
+                    st.rerun()
+            
+            with confirm_col2:
+                if st.button("❌ Reject", use_container_width=True, key="reject_changes"):
+                    # Add rejection to chat
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": "❌ Changes rejected. Feel free to provide more feedback."
+                    })
+                    
+                    # Reset proposal state
+                    st.session_state.proposed_feature_json = None
+                    st.session_state.proposed_explanation = ""
+                    st.session_state.awaiting_confirmation = False
+                    
+                    st.rerun()
+        
+        # Chat input - using form for Enter key submission (fixed at bottom of sidebar)
+        with st.form(key=f"chat_form_{st.session_state.feedback_counter}", clear_on_submit=True):
+            user_input = st.text_input(
+                "Message:",
+                placeholder="Ask a question or describe changes...",
+                key=f"chat_input_{st.session_state.feedback_counter}",
+                label_visibility="collapsed"
+            )
+            col_send, col_clear = st.columns([3, 1])
+            with col_send:
+                submitted = st.form_submit_button("📤 Send", use_container_width=True)
+            with col_clear:
+                # Clear button inside form doesn't work well, we'll handle outside
+                pass
+        
+        # Handle form submission
+        if submitted and user_input and user_input.strip():
+            # Add user message to chat
+            st.session_state.chat_messages.append({
+                "role": "user",
+                "content": user_input.strip()
+            })
+            
+            # Get current feature file (latest version)
+            latest_feature_json = st.session_state.feature_files[-1]
+            
+            # Prepare verification output if checkbox is checked
+            verification_for_chat = ""
+            if st.session_state.include_verification_in_chat:
+                verification_for_chat = st.session_state.verification_outputs[-1]
+            
+            # Call the chat refinement method
+            with st.spinner("🤔 Thinking..."):
+                try:
+                    if st.session_state.test_type == "API":
+                        intent, explanation, proposed_json = st.session_state.requirement_agent.chat_refine_api_feature_file(
+                            current_feature_json=latest_feature_json,
+                            chat_messages=st.session_state.chat_messages[:-1],
+                            user_message=user_input.strip(),
+                            verification_output=verification_for_chat
+                        )
+                    else:  # UI
+                        intent, explanation, proposed_json = st.session_state.requirement_agent.chat_refine_ui_feature_file(
+                            current_feature_json=latest_feature_json,
+                            chat_messages=st.session_state.chat_messages[:-1],
+                            user_message=user_input.strip(),
+                            verification_output=verification_for_chat
+                        )
+                    
+                    # Add assistant response to chat
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": explanation
+                    })
+                    
+                    # Only show Apply/Reject if it's a change request with valid proposed feature
+                    if intent == "change" and proposed_json is not None:
+                        st.session_state.proposed_feature_json = proposed_json
+                        st.session_state.proposed_explanation = explanation
+                        st.session_state.awaiting_confirmation = True
+                    else:
+                        # It's a question - no confirmation needed
+                        st.session_state.proposed_feature_json = None
+                        st.session_state.awaiting_confirmation = False
+                    
+                    st.session_state.feedback_counter += 1
+                    
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": f"Sorry, I encountered an error: {str(e)}"
+                    })
+            
+            st.rerun()
+        
+        # Clear chat button (outside form)
+        if st.session_state.chat_messages:
+            if st.button("🗑️ Clear Chat", use_container_width=True, key="clear_chat"):
+                st.session_state.chat_messages = []
+                st.session_state.proposed_feature_json = None
+                st.session_state.proposed_explanation = ""
+                st.session_state.awaiting_confirmation = False
+                st.session_state.feedback_counter += 1
+                st.rerun()
 
 # Show Final Edit Section before script generation
 if st.session_state.show_final_edit_section and not st.session_state.show_scripts_section:
@@ -522,13 +744,16 @@ if st.session_state.show_final_edit_section and not st.session_state.show_script
     
     st.info("💡 **Last chance to edit!** You can manually modify the feature file below, or proceed directly to script generation.")
     
-    # Get the latest feature file
-    latest_feature_file = st.session_state.feature_files[-1]
+    # Get the latest feature file (JSON)
+    latest_feature_json = st.session_state.feature_files[-1]
+    
+    # Convert to Gherkin for editing
+    latest_feature_text = json_to_gherkin(latest_feature_json)
     
     # Editable feature file
     edited_feature_file = st.text_area(
         "Edit Feature File (optional):",
-        value=latest_feature_file,
+        value=latest_feature_text,
         height=400,
         key="final_edit_feature_file",
         help="Make any final manual edits to the feature file before generating scripts"
@@ -544,8 +769,11 @@ if st.session_state.show_final_edit_section and not st.session_state.show_script
     
     if save_and_proceed_btn:
         # Save the edited version as a new version
-        if edited_feature_file != latest_feature_file:
-            st.session_state.feature_files.append(edited_feature_file)
+        if edited_feature_file != latest_feature_text:
+            # Convert edited Gherkin back to JSON
+            from utils.gherkin_json_utils import gherkin_to_json
+            edited_feature_json = gherkin_to_json(edited_feature_file)
+            st.session_state.feature_files.append(edited_feature_json)
             st.session_state.verification_outputs.append("(Manually edited by user)")
             st.success("✅ Edits saved!")
         
@@ -563,8 +791,37 @@ if st.session_state.show_scripts_section:
     st.divider()
     st.subheader("🤖 Automation Scripts Generation")
     
-    # Use the LATEST feature file for script generation
-    latest_feature_file = st.session_state.feature_files[-1]
+    # === PERSISTENCE: Show Feature File and Chat History ===
+    with st.expander("📋 Feature File & Chat History (from refinement)", expanded=False):
+        persist_col1, persist_col2 = st.columns([2, 1])
+        
+        with persist_col1:
+            st.markdown("**📄 Final Feature File:**")
+            # Show version info
+            version_count = len(st.session_state.feature_files)
+            st.caption(f"Version {version_count} of {version_count} (Final)")
+            
+            # Display the feature file
+            latest_feature_json = st.session_state.feature_files[-1]
+            feature_text = json_to_gherkin(latest_feature_json)
+            with st.container(height=600):
+                st.code(feature_text, language="gherkin")
+        
+        with persist_col2:
+            st.markdown("**💬 Chat History:**")
+            if st.session_state.chat_messages:
+                with st.container(height=600):
+                    for msg in st.session_state.chat_messages:
+                        if msg["role"] == "user":
+                            st.markdown(f"**🧑 You:** {msg['content']}")
+                        else:
+                            st.markdown(f"**🤖 Assistant:** {msg['content']}")
+                        st.markdown("---")
+            else:
+                st.info("No chat refinements were made.")
+    
+    # Use the LATEST feature file (JSON) for script generation
+    latest_feature_json = st.session_state.feature_files[-1]
     
     # Only generate if not already generated
     if not st.session_state.java_files:
@@ -608,318 +865,326 @@ if st.session_state.show_scripts_section:
         if generate_scripts_btn:
             st.session_state.user_script_input = user_additional_input
             
-            with st.spinner("Parsing Feature File Scenarios..."):
-                parser = GherkinScenarioParser()
-                featureFileScenarios = parser.parse(latest_feature_file)
-                st.success(f"Found {len(featureFileScenarios)} scenario(s)")
+            # Count scenarios from JSON
+            num_scenarios = len(latest_feature_json.get("scenarios", []))
+            st.success(f"Found {num_scenarios} scenario(s)")
             
-            # Generate scripts based on test type
+            # Generate scripts using JSON IR (deterministic approach)
             if st.session_state.test_type == "API":
                 with st.spinner("Generating API Automation Scripts for each scenario..."):
-                    st.session_state.java_files = generateAutomationScriptsPerScenario(
-                        featureFileScenarios, 
-                        userAdditionalInput=user_additional_input
+                    # Generate JSON IR first
+                    st.session_state.script_jsons = st.session_state.automation_agent.generate_api_scripts_json_per_scenario(
+                        latest_feature_json, 
+                        user_additional_input=user_additional_input
                     )
+                    # Convert to Java for display
+                    st.session_state.java_files = [
+                        st.session_state.automation_agent.script_json_to_java(sj) 
+                        for sj in st.session_state.script_jsons
+                    ]
                     st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
             else:  # UI
                 with st.spinner("Generating UI Automation Scripts for each scenario..."):
-                    st.session_state.java_files = generateUIAutomationScriptsPerScenario(
-                        featureFileScenarios, 
-                        userAdditionalInput=user_additional_input
+                    # Generate JSON IR first
+                    st.session_state.script_jsons = st.session_state.automation_agent.generate_ui_scripts_json_per_scenario(
+                        latest_feature_json, 
+                        user_additional_input=user_additional_input
                     )
+                    # Convert to Java for display
+                    st.session_state.java_files = [
+                        st.session_state.automation_agent.script_json_to_java(sj) 
+                        for sj in st.session_state.script_jsons
+                    ]
                     st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
             
             st.rerun()
     
     # Display generated scripts if they exist
     if st.session_state.java_files:
-        # Display individual Java files
+        # Display individual Java files in collapsed expander
         st.divider()
-        st.subheader("📄 Individual Generated Scripts")
-        for i, java_code in enumerate(st.session_state.java_files, 1):
-            with st.expander(f"Scenario {i} - Java Code"):
-                with st.container(height=500):
+        with st.expander("📄 Individual Generated Scripts (click to expand)", expanded=False):
+            for i, java_code in enumerate(st.session_state.java_files, 1):
+                st.markdown(f"**Scenario {i}:**")
+                with st.container(height=400):
                     st.code(java_code, language="java")
+                st.divider()
         
         # Merge Java files first
         st.divider()
-        st.subheader("🔗 Merged Java File")
-        st.info("💡 This is the final merged output combining all individual scripts into a single class.")
+        st.subheader("🔗 Merged Java File with Chat Refinement")
+        st.info("💡 This is the final merged output. Use the chat to ask questions or request changes. (Using JSON IR for deterministic modifications)")
         
         # Only merge if not already merged
         if not st.session_state.merged_java_file:
-            with st.spinner("Merging all Java files into single class..."):
-                merger = JavaFileMerger(merged_class_name="GeneratedTests")
-                st.session_state.merged_java_file = merger.merge(st.session_state.java_files)
-        
-        with st.container(height=800):
-            st.code(st.session_state.merged_java_file, language="java")
-        
-        # Add feedback section for merged script
-        if not st.session_state.show_script_feedback_section:
-            st.divider()
-            st.subheader("💭 Need to modify the merged script?")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📝 Provide Feedback to Refactor Merged Script", use_container_width=True):
-                    st.session_state.show_script_feedback_section = True
-                    st.rerun()
-            with col2:
-                if st.button("✅ Accept & Download", use_container_width=True, type="primary"):
-                    # Skip feedback and allow download
-                    st.session_state.show_script_feedback_section = False
-                    st.rerun()
-        
-        # Show script feedback section for MERGED file
-        if st.session_state.show_script_feedback_section:
-            st.divider()
-            st.subheader("🔧 Refactor Merged Script with Feedback")
-            
-            # Add helpful guidelines
-            st.info("""
-            💡 **Feedback Guidelines for Best Results:**
-            
-            ✅ **Simple & Specific feedback works best:**
-            - "Change class name from X to Y"
-            - "Rename method ABC to XYZ"  
-            - "Add null check for parameter X"
-            - "Remove unused variable/import"
-            - "Update logger reference"
-            - "Add error handling to method X"
-            - "Change snake_case to camelCase" ⭐ NEW!
-            - "Convert camelCase to snake_case" ⭐ NEW!
-            
-            ❌ **Avoid complex requests:**
-            - "Completely restructure the code"
-            - "Apply all best practices"
-            - "Make it production-ready"
-            
-            💡 **Tip**: For complex changes, edit the code directly or download and modify it manually.
-            """)
-            
-            # Show the current merged script in expander
-            with st.expander("📄 Current Merged Script (click to expand)", expanded=False):
-                with st.container(height=800):
-                    st.code(st.session_state.merged_java_file, language="java")
-            
-            # Feedback input
-            script_feedback = st.text_area(
-                "Provide your feedback/modification requests for the merged script:",
-                height=150,
-                placeholder="Example:\n"
-                           "- Add null checks for parameters\n"
-                           "- Change method names to be more descriptive\n"
-                           "- Add error handling for network failures\n"
-                           "- Update assertions to include custom messages\n"
-                           "- Remove unnecessary code\n"
-                           "- Improve code organization...",
-                key=f"merged_script_feedback_input_{st.session_state.feedback_counter}"
-            )
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                refactor_btn = st.button("🔄 Refactor Merged Script", use_container_width=True, type="primary")
-            
-            with col2:
-                done_btn = st.button("✅ Done with Changes", use_container_width=True)
-            
-            # Add Undo button if there's history
-            if st.session_state.merged_java_history:
-                st.divider()
-                col_undo1, col_undo2 = st.columns([3, 1])
-                with col_undo1:
-                    st.info(f"💡 **Undo Available**: You can revert to the previous version ({len(st.session_state.merged_java_history)} version(s) in history)")
-                with col_undo2:
-                    undo_btn = st.button("↩️ Undo Last Change", use_container_width=True, type="secondary")
-                
-                if undo_btn:
-                    # Restore previous version
-                    previous_version = st.session_state.merged_java_history.pop()
-                    st.session_state.merged_java_file = previous_version
-                    
-                    # Also remove last diff and intent
-                    if st.session_state.script_diff_outputs:
-                        st.session_state.script_diff_outputs.pop()
-                    if st.session_state.refactoring_intents:
-                        st.session_state.refactoring_intents.pop()
-                    
-                    st.success("↩️ Successfully reverted to previous version!")
-                    st.rerun()
-            
-            if refactor_btn and script_feedback.strip():
-                # Step 1: Extract and show intent
-                with st.spinner("🤔 Understanding your request..."):
-                    from utils.utils import extract_refactoring_intent
-                    
-                    # Extract intent
-                    intent = extract_refactoring_intent(
-                        script_feedback,
+            with st.spinner("Merging all scripts into single class..."):
+                # Use JSON IR merging if we have script_jsons
+                if st.session_state.script_jsons:
+                    st.session_state.merged_script_json = st.session_state.automation_agent.merge_script_jsons(
+                        st.session_state.script_jsons,
+                        merged_class_name="GeneratedTests"
+                    )
+                    st.session_state.merged_java_file = st.session_state.automation_agent.script_json_to_java(
+                        st.session_state.merged_script_json
+                    )
+                else:
+                    # Fallback to legacy string-based merging
+                    st.session_state.merged_java_file = st.session_state.automation_agent.merge_java_files(
+                        st.session_state.java_files,
+                        merged_class_name="GeneratedTests"
+                    )
+                    # Convert to JSON for future refinements
+                    st.session_state.merged_script_json = st.session_state.automation_agent.java_to_script_json(
                         st.session_state.merged_java_file
                     )
                 
-                # Display the extracted intent
-                st.divider()
-                st.subheader("🎯 Understanding Your Request")
-                
-                intent_type = intent.get("type", "unknown")
-                
-                # Determine if using pattern or fallback
-                known_patterns = [
-                    "rename_class", "rename_method", "rename_variable",
-                    "remove_code", "add_import", "remove_import",
-                    "snake_to_camel", "camel_to_snake", "update_string"
-                ]
-                
-                if intent_type in known_patterns:
-                    approach = "✅ **Pattern-Based Refactoring** (Fast, Clean Diffs)"
-                    reliability = "🎯 High Reliability"
-                elif intent_type == "complex":
-                    approach = "🔄 **LLM-Based Refactoring** (May have formatting changes)"
-                    reliability = "⚠️ Moderate Reliability"
-                else:
-                    approach = "🔄 **LLM Fallback** (Unknown pattern detected)"
-                    reliability = "⚠️ Best Effort"
-                
-                # Create intent display
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.info(f"""
-                    **Detected Intent**: `{intent_type}`
-                    
-                    **Approach**: {approach}
-                    
-                    **Details**:
-                    - Old Value: `{intent.get("old_value", "N/A")}`
-                    - New Value: `{intent.get("new_value", "N/A")}`
-                    - Context: {intent.get("context", "N/A")}
-                    """)
-                
-                with col2:
-                    st.metric("Reliability", reliability.split()[1])
-                
-                # Step 2: Perform refactoring
-                with st.spinner("🔧 Applying changes..."):
-                    # Get the current merged script
-                    original_merged_script = st.session_state.merged_java_file
-                    
-                    # Save current version to history BEFORE refactoring (for undo)
-                    if not st.session_state.merged_java_history:
-                        st.session_state.merged_java_history = []
-                    st.session_state.merged_java_history.append(original_merged_script)
-                    
-                    # Refactor with feedback
-                    diff_output, refactored_script = refactorAutomationScriptWithFeedback(
-                        original_merged_script,
-                        script_feedback
-                    )
-                    
-                    # Update the merged script
-                    st.session_state.merged_java_file = refactored_script
-                    
-                    # Store diff output - append to list to keep history
-                    if not st.session_state.script_diff_outputs:
-                        st.session_state.script_diff_outputs = []
-                    
-                    # Append new diff (keeping all previous diffs)
-                    st.session_state.script_diff_outputs.append(diff_output)
-                    
-                    # Store the intent for this iteration
-                    if not st.session_state.refactoring_intents:
-                        st.session_state.refactoring_intents = []
-                    st.session_state.refactoring_intents.append({
-                        "feedback": script_feedback,
-                        "intent": intent,
-                        "approach": approach
-                    })
-                    
-                    # Increment counter to reset the feedback textarea
-                    st.session_state.feedback_counter += 1
-                
-                st.success("✅ Refactoring complete! You can provide more feedback or click 'Done with Changes'")
-                st.rerun()
-            
-            # Show all diffs if available for the merged script
-            if st.session_state.script_diff_outputs:
-                st.divider()
-                st.success(f"✅ Merged script has been refactored {len(st.session_state.script_diff_outputs)} time(s)!")
-                
-                # Show each iteration of changes with intent - COLLAPSED by default
-                for idx, diff_output in enumerate(st.session_state.script_diff_outputs, 1):
-                    # Show intent if available
-                    intent_label = ""
-                    if st.session_state.refactoring_intents and idx <= len(st.session_state.refactoring_intents):
-                        intent_data = st.session_state.refactoring_intents[idx - 1]
-                        intent_type = intent_data['intent'].get('type', 'N/A')
-                        intent_label = f" [{intent_type}]"
-                    
-                    # Collapse each iteration - expanded=False for compact UI
-                    with st.expander(f"📊 Iteration {idx}{intent_label} - View Changes", expanded=False):
-                        # Show intent if available
-                        if st.session_state.refactoring_intents and idx <= len(st.session_state.refactoring_intents):
-                            intent_data = st.session_state.refactoring_intents[idx - 1]
-                            
-                            st.markdown("#### 🎯 Your Request & System Understanding")
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                st.markdown(f"**Your Feedback**: {intent_data['feedback']}")
-                                st.markdown(f"**Detected Intent**: `{intent_data['intent'].get('type', 'N/A')}`")
-                                st.markdown(f"**Approach Used**: {intent_data['approach']}")
-                            with col2:
-                                if intent_data['intent'].get('type') in ["rename_class", "rename_method", "rename_variable", "remove_code", "add_import", "remove_import", "snake_to_camel", "camel_to_snake", "update_string"]:
-                                    st.success("Pattern ✅")
-                                else:
-                                    st.warning("LLM 🔄")
-                            
-                            st.divider()
-                        
-                        st.markdown("**Changes Made:**")
-                        st.info("💡 Lines starting with `-` were removed, lines with `+` were added")
-                        with st.container(height=400):
-                            st.code(diff_output, language="diff")
-            
-            if done_btn:
-                st.session_state.show_script_feedback_section = False
-                st.rerun()
+                # Initialize script versions with the first merged version
+                st.session_state.script_versions = [st.session_state.merged_java_file]
+                st.session_state.current_script_version_index = 0
         
-        # Only show download section if NOT in feedback mode
-        if not st.session_state.show_script_feedback_section:
-            st.divider()
+        # Ensure script_versions is initialized
+        if not st.session_state.script_versions:
+            st.session_state.script_versions = [st.session_state.merged_java_file]
+            st.session_state.current_script_version_index = 0
+        
+        # === SPLIT VIEW: Script (left) + Chat (right) ===
+        script_col, script_chat_col = st.columns([2, 1])
+        
+        # Script display column
+        with script_col:
+            # Version navigation
+            num_script_versions = len(st.session_state.script_versions)
+            current_script_idx = st.session_state.current_script_version_index
             
-            # Download button for merged file
+            if num_script_versions > 1:
+                nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1])
+                with nav_col1:
+                    if st.button("◀", key="prev_script_version", disabled=(current_script_idx == 0)):
+                        st.session_state.current_script_version_index -= 1
+                        st.rerun()
+                with nav_col2:
+                    st.markdown(f"<div style='text-align: center;'>📄 Version {current_script_idx + 1} of {num_script_versions}</div>", unsafe_allow_html=True)
+                with nav_col3:
+                    if st.button("▶", key="next_script_version", disabled=(current_script_idx == num_script_versions - 1)):
+                        st.session_state.current_script_version_index += 1
+                        st.rerun()
+            else:
+                st.caption("📄 Version 1 of 1 (Original)")
+            
+            # Display current script version
+            current_script = st.session_state.script_versions[current_script_idx]
+            with st.container(height=800):
+                st.code(current_script, language="java")
+            
+            # Download button for current version
             st.download_button(
-                label="📥 Download Merged Java File",
-                data=st.session_state.merged_java_file,
-                file_name="GeneratedTests.java",
-                mime="text/plain"
+                label="📥 Download This Version",
+                data=current_script,
+                file_name=f"GeneratedTests_v{current_script_idx + 1}.java",
+                mime="text/plain",
+                use_container_width=True
             )
+        
+        # Chat column
+        with script_chat_col:
+            st.subheader("� Refine Script")
             
-            # Show summary of all changes if any diffs exist
-            if st.session_state.script_diff_outputs:
-                st.divider()
-                st.subheader(f"📋 Summary of All Refactoring Iterations ({len(st.session_state.script_diff_outputs)} total)")
-                for i, diff in enumerate(st.session_state.script_diff_outputs, 1):
-                    if diff:
-                        # Get intent data if available
-                        intent_label = ""
-                        if st.session_state.refactoring_intents and i <= len(st.session_state.refactoring_intents):
-                            intent_data = st.session_state.refactoring_intents[i - 1]
-                            intent_type = intent_data['intent'].get('type', 'N/A')
-                            intent_label = f" [{intent_type}]"
+            # Fixed-height scrollable chat container
+            script_chat_container = st.container(height=800)
+            with script_chat_container:
+                if not st.session_state.script_chat_messages:
+                    st.info("👋 Ask questions about the script or describe changes you'd like to make.")
+                
+                # Display chat messages using st.chat_message for nice styling
+                for msg in st.session_state.script_chat_messages:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+            
+            # Show proposed changes if awaiting confirmation
+            if st.session_state.script_awaiting_confirmation and st.session_state.proposed_script:
+                st.warning("📝 **Proposed Changes Ready - Review and Apply?**")
+                
+                # Show LLM reasoning if available
+                if st.session_state.script_reasoning:
+                    with st.expander("🧠 LLM Reasoning (Thinking Process)", expanded=False):
+                        with st.container(height=200):
+                            st.markdown(st.session_state.script_reasoning)
+                
+                # Generate diff between current and proposed script
+                import difflib
+                current_script = st.session_state.script_versions[-1]
+                proposed_script = st.session_state.proposed_script
+                
+                # Create unified diff
+                current_lines = current_script.splitlines(keepends=True)
+                proposed_lines = proposed_script.splitlines(keepends=True)
+                diff_lines = list(difflib.unified_diff(
+                    current_lines, 
+                    proposed_lines,
+                    fromfile='Current Version',
+                    tofile='Proposed Version',
+                    lineterm=''
+                ))
+                
+                if diff_lines:
+                    diff_text = ''.join(diff_lines)
+                    with st.expander("📋 View Changes (Diff)", expanded=True):
+                        with st.container(height=300):
+                            st.code(diff_text, language="diff")
+                else:
+                    st.info("No visible changes detected.")
+                
+                # Option to view full proposed script
+                with st.expander("📄 View Full Proposed Script", expanded=False):
+                    with st.container(height=300):
+                        st.code(st.session_state.proposed_script, language="java")
+                
+                confirm_col1, confirm_col2 = st.columns(2)
+                with confirm_col1:
+                    if st.button("✅ Apply", use_container_width=True, type="primary", key="apply_script_changes"):
+                        # Apply the proposed changes - add to versions
+                        st.session_state.script_versions.append(st.session_state.proposed_script)
+                        st.session_state.merged_java_file = st.session_state.proposed_script
                         
-                        with st.expander(f"🔄 Iteration {i}{intent_label}", expanded=False):
-                            # Show feedback and intent
-                            if st.session_state.refactoring_intents and i <= len(st.session_state.refactoring_intents):
-                                intent_data = st.session_state.refactoring_intents[i - 1]
-                                st.markdown(f"**Your Feedback**: {intent_data['feedback']}")
-                                st.markdown(f"**Detected Intent**: `{intent_data['intent'].get('type', 'N/A')}`")
-                                st.markdown(f"**Approach**: {intent_data['approach']}")
-                                st.divider()
+                        # Update the merged_script_json if we have a proposed JSON
+                        if hasattr(st.session_state, 'proposed_script_json') and st.session_state.proposed_script_json:
+                            st.session_state.merged_script_json = st.session_state.proposed_script_json
+                            st.session_state.proposed_script_json = None
+                        
+                        # Update version index to latest
+                        st.session_state.current_script_version_index = len(st.session_state.script_versions) - 1
+                        
+                        # Add confirmation to chat
+                        st.session_state.script_chat_messages.append({
+                            "role": "assistant",
+                            "content": "✅ Changes applied! The script has been updated to a new version."
+                        })
+                        
+                        # Reset proposal state
+                        st.session_state.proposed_script = None
+                        st.session_state.script_proposed_explanation = ""
+                        st.session_state.script_awaiting_confirmation = False
+                        st.session_state.script_reasoning = ""  # Clear reasoning
+                        
+                        st.rerun()
+                
+                with confirm_col2:
+                    if st.button("❌ Reject", use_container_width=True, key="reject_script_changes"):
+                        # Add rejection to chat
+                        st.session_state.script_chat_messages.append({
+                            "role": "assistant",
+                            "content": "❌ Changes rejected. Feel free to provide more feedback."
+                        })
+                        
+                        # Reset proposal state
+                        st.session_state.proposed_script = None
+                        st.session_state.script_proposed_explanation = ""
+                        st.session_state.script_awaiting_confirmation = False
+                        st.session_state.script_reasoning = ""  # Clear reasoning
+                        
+                        st.rerun()
+            
+            # Chat input - using form for Enter key submission
+            with st.form(key=f"script_chat_form_{st.session_state.script_feedback_counter}", clear_on_submit=True):
+                script_user_input = st.text_input(
+                    "Message:",
+                    placeholder="Ask a question or describe changes...",
+                    key=f"script_chat_input_{st.session_state.script_feedback_counter}",
+                    label_visibility="collapsed"
+                )
+                script_submitted = st.form_submit_button("📤 Send", use_container_width=True)
+            
+            # Handle form submission
+            if script_submitted and script_user_input and script_user_input.strip():
+                # Add user message to chat
+                st.session_state.script_chat_messages.append({
+                    "role": "user",
+                    "content": script_user_input.strip()
+                })
+                
+                # Get current script (latest version)
+                latest_script = st.session_state.script_versions[-1]
+                
+                # Call the chat refinement method - use JSON IR for deterministic changes
+                with st.spinner("🤔 Thinking (deterministic JSON modifications)..."):
+                    try:
+                        # Use JSON IR-based refinement if we have merged_script_json
+                        if st.session_state.merged_script_json:
+                            intent, reasoning, explanation, proposed_json = st.session_state.automation_agent.chat_refine_script_json(
+                                current_script_json=st.session_state.merged_script_json,
+                                chat_messages=st.session_state.script_chat_messages[:-1],
+                                user_message=script_user_input.strip()
+                            )
                             
-                            with st.container(height=400):
-                                st.code(diff, language="diff")
+                            # Store reasoning for display
+                            st.session_state.script_reasoning = reasoning
+                            
+                            # Convert proposed JSON to Java if we have one
+                            proposed_script = None
+                            if proposed_json is not None:
+                                proposed_script = st.session_state.automation_agent.script_json_to_java(proposed_json)
+                                # Store the JSON for next iteration
+                                st.session_state.proposed_script_json = proposed_json
+                        else:
+                            # Fallback to legacy string-based refinement (no reasoning)
+                            intent, explanation, proposed_script = st.session_state.automation_agent.chat_refine_script(
+                                current_script=latest_script,
+                                chat_messages=st.session_state.script_chat_messages[:-1],
+                                user_message=script_user_input.strip()
+                            )
+                            st.session_state.script_reasoning = ""
+                        
+                        # Add assistant response to chat
+                        st.session_state.script_chat_messages.append({
+                            "role": "assistant",
+                            "content": explanation
+                        })
+                        
+                        # Only show Apply/Reject if it's a change request with valid proposed script
+                        if intent == "change" and proposed_script is not None:
+                            st.session_state.proposed_script = proposed_script
+                            st.session_state.script_proposed_explanation = explanation
+                            st.session_state.script_awaiting_confirmation = True
+                        else:
+                            # It's a question - no confirmation needed
+                            st.session_state.proposed_script = None
+                            st.session_state.script_awaiting_confirmation = False
+                        
+                        st.session_state.script_feedback_counter += 1
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+                        st.session_state.script_chat_messages.append({
+                            "role": "assistant",
+                            "content": f"Sorry, I encountered an error: {str(e)}"
+                        })
+                
+                st.rerun()
+            
+            # Clear chat button
+            if st.session_state.script_chat_messages:
+                if st.button("�️ Clear Chat", use_container_width=True, key="clear_script_chat"):
+                    st.session_state.script_chat_messages = []
+                    st.session_state.proposed_script = None
+                    st.session_state.script_proposed_explanation = ""
+                    st.session_state.script_awaiting_confirmation = False
+                    st.session_state.script_feedback_counter += 1
+                    st.rerun()
+        
+        # Download final merged file
+        st.divider()
+        final_col1, final_col2 = st.columns(2)
+        with final_col1:
+            st.download_button(
+                label="📥 Download Final Merged Java File",
+                data=st.session_state.script_versions[-1],
+                file_name="GeneratedTests.java",
+                mime="text/plain",
+                use_container_width=True
+            )
+        with final_col2:
+            if len(st.session_state.script_versions) > 1:
+                st.success(f"✅ Script refined {len(st.session_state.script_versions) - 1} time(s)")
         
         # Option to start over (always visible)
         st.divider()
@@ -940,4 +1205,23 @@ if st.session_state.show_scripts_section:
             st.session_state.refactoring_intents = []
             st.session_state.merged_java_history = []
             st.session_state.direct_feature_file = ""  # Reset direct feature file
+            # Reset JSON IR state
+            st.session_state.script_jsons = []
+            st.session_state.merged_script_json = None
+            # Reset feature file chat-related state
+            st.session_state.chat_messages = []
+            st.session_state.proposed_feature_json = None
+            st.session_state.proposed_explanation = ""
+            st.session_state.current_feature_version_index = 0
+            st.session_state.include_verification_in_chat = False
+            st.session_state.show_chat_refinement = False
+            st.session_state.awaiting_confirmation = False
+            # Reset script chat-related state
+            st.session_state.script_chat_messages = []
+            st.session_state.proposed_script = None
+            st.session_state.script_proposed_explanation = ""
+            st.session_state.script_awaiting_confirmation = False
+            st.session_state.script_versions = []
+            st.session_state.current_script_version_index = 0
+            st.session_state.script_feedback_counter = 0
             st.rerun()
