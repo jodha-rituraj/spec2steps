@@ -7,9 +7,9 @@ uvicorn>=0.24.0
 pydantic>=2.5.0
 
 # LLM and AI Libraries
-langchain-groq>=0.0.1
+langchain-groq>=0.3.8  # Minimum version with reasoning_effort support (latest: 1.1.1)
 langchain-openai>=0.0.2
-langchain-core>=0.1.0
+langchain-core>=0.3.0  # Minimum version for compatibility with langchain-groq>=0.3.8
 groq>=0.4.0
 
 # Environment and Configuration
