@@ -38,14 +38,18 @@ def get_llm(provider="groq", api_key=None, endpoint=None, deployment_name=None, 
             raise ValueError(
                 "❌ No GROQ API key found! Please either:\n"
                 "1. Enter your API key in the sidebar, or\n"
-                "2. Set GROQ_API_KEY in your .env file"
+                "2. Set GROQ_API_KEY in your .env file (local development only)"
             )
         
+        # Don't set os.environ - pass key directly to ChatGroq to avoid security issues
+        # Setting os.environ could leak keys across different parts of the application
+        
+        # Build ChatGroq with reasoning support for GPT-OSS models
         if include_reasoning:
             return ChatGroq(
                 api_key=groq_api_key,
                 model="openai/gpt-oss-120b",
-                temperature=0.6,
+                temperature=0.6,  # Recommended for reasoning models
                 reasoning_effort=reasoning_effort if reasoning_effort in REASONING_EFFORTS else "medium",
             )
         else:
