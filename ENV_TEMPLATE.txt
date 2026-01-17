@@ -1,0 +1,11 @@
+# Copy this file to .env and fill in your API keys
+# 
+# On Unix/Mac/Linux: cp ENV_TEMPLATE.txt .env
+# On Windows: copy ENV_TEMPLATE.txt .env
+
+# GROQ API Configuration
+# Get your API key from: https://console.groq.com/keys
+GROQ_API_KEY=your_api_key_here
+
+# Optional: Together AI API Key (if using OpenAI GPT-OSS models via Together AI)
+# TOGETHER_API_KEY=your_together_api_key_here
