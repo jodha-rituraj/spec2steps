@@ -262,6 +262,9 @@ with st.sidebar:
         except Exception as e:
             st.error(f"❌ Initialization error: {str(e)}")
             st.session_state.api_key_valid = False
+            # Clear invalid key from session
+            if key_source == "sidebar" or key_source == "session":
+                st.session_state.user_api_key = None
     else:
         st.session_state.api_key_valid = False
     
