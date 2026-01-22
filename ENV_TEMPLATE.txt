@@ -5,7 +5,13 @@
 
 # GROQ API Configuration
 # Get your API key from: https://console.groq.com/keys
-GROQ_API_KEY=your_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_API_KEY=your_azure_api_key_here
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4-turbo
+AZURE_OPENAI_API_VERSION=2024-02-01
 
 # Optional: Together AI API Key (if using OpenAI GPT-OSS models via Together AI)
 # TOGETHER_API_KEY=your_together_api_key_here
