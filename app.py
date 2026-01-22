@@ -79,6 +79,20 @@ if 'direct_feature_file' not in st.session_state:
     st.session_state.direct_feature_file = ""  # For direct script generation workflow
 
 # ----------------------------
+# LLM Configuration session state
+# ----------------------------
+if 'llm_provider' not in st.session_state:
+    st.session_state.llm_provider = "Groq"
+if 'user_api_key' not in st.session_state:
+    st.session_state.user_api_key = ""
+if 'azure_endpoint' not in st.session_state:
+    st.session_state.azure_endpoint = ""
+if 'azure_deployment' not in st.session_state:
+    st.session_state.azure_deployment = ""
+if 'azure_api_version' not in st.session_state:
+    st.session_state.azure_api_version = "2024-02-01"
+
+# ----------------------------
 # Chat-based refinement session state variables
 # ----------------------------
 if 'chat_messages' not in st.session_state:
@@ -127,83 +141,126 @@ if 'automation_agent' not in st.session_state:
     st.session_state.automation_agent = AutomationScriptAgent()
 
 # ----------------------------
-# Sidebar for API Key Configuration
+# Sidebar for LLM Configuration
 # ----------------------------
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # For Streamlit Cloud: API key must be entered manually
-    # For local: Can use .env file or enter manually
-    if IS_STREAMLIT_CLOUD:
-        help_text = "Enter your GROQ API key. Required for Streamlit Cloud deployment."
-    else:
-        help_text = "Enter your GROQ API key. Optional if set in .env file (local development only)."
-    
-    api_key_input = st.text_input(
-        "GROQ API Key",
-        type="password",
-        help=help_text,
-        placeholder="gsk_...",
-        value=""  # Always start empty - don't pre-fill from session
+    # LLM Provider Selection
+    provider = st.selectbox(
+        "Select LLM Provider",
+        options=["Groq", "Azure OpenAI"],
+        index=0 if st.session_state.llm_provider == "Groq" else 1,
+        key="provider_selector"
     )
+    st.session_state.llm_provider = provider
     
+    # Provider-specific inputs
+    api_key_to_use = None
+    azure_params = {}
+    
+    if provider == "Groq":
+        # For Streamlit Cloud: API key must be entered manually
+        if IS_STREAMLIT_CLOUD:
+            help_text = "Enter your GROQ API key. Required for Streamlit Cloud deployment."
+        else:
+            help_text = "Enter your GROQ API key. Optional if set in .env file (local development only)."
+        
+        api_key_input = st.text_input(
+            "GROQ API Key",
+            type="password",
+            help=help_text,
+            placeholder="gsk_...",
+            value=st.session_state.user_api_key if st.session_state.llm_provider == "Groq" else ""
+        )
+        
+        # Logic for Groq API Key
+        if api_key_input and api_key_input.strip():
+            api_key_to_use = api_key_input.strip()
+            st.session_state.user_api_key = api_key_to_use
+            st.success("✅ Using provided Groq key")
+        elif not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY", "").strip():
+            api_key_to_use = os.getenv("GROQ_API_KEY").strip()
+            st.info("ℹ️ Using Groq key from .env")
+        else:
+            st.warning("⚠️ No Groq API key configured.")
+            
+    else:  # Azure OpenAI
+        azure_api_key = st.text_input(
+            "Azure OpenAI API Key",
+            type="password",
+            value=st.session_state.user_api_key if st.session_state.llm_provider == "Azure OpenAI" else ""
+        )
+        azure_endpoint = st.text_input(
+            "Azure Endpoint",
+            placeholder="https://your-resource.openai.azure.com/",
+            value=st.session_state.azure_endpoint
+        )
+        azure_deployment = st.text_input(
+            "Deployment Name",
+            placeholder="e.g., gpt-4-turbo",
+            value=st.session_state.azure_deployment
+        )
+        azure_api_version = st.text_input(
+            "API Version",
+            value=st.session_state.azure_api_version
+        )
+        
+        # Update session state
+        st.session_state.user_api_key = azure_api_key
+        st.session_state.azure_endpoint = azure_endpoint
+        st.session_state.azure_deployment = azure_deployment
+        st.session_state.azure_api_version = azure_api_version
+        
+        if azure_api_key and azure_endpoint and azure_deployment:
+            api_key_to_use = azure_api_key.strip()
+            azure_params = {
+                "endpoint": azure_endpoint.strip(),
+                "deployment_name": azure_deployment.strip(),
+                "api_version": azure_api_version.strip()
+            }
+            st.success("✅ Azure configuration provided")
+        elif not IS_STREAMLIT_CLOUD and all([os.getenv("AZURE_OPENAI_API_KEY"), os.getenv("AZURE_OPENAI_ENDPOINT"), os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")]):
+            api_key_to_use = os.getenv("AZURE_OPENAI_API_KEY").strip()
+            azure_params = {
+                "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT").strip(),
+                "deployment_name": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME").strip(),
+                "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01").strip()
+            }
+            st.info("ℹ️ Using Azure config from .env")
+        else:
+            st.warning("⚠️ Azure OpenAI configuration incomplete.")
+
     # Privacy and Key Information
     st.info("""
     🔒 **Privacy & Security**
     
     - We **don't store or log** any keys, conversations, or prompts
     - All processing happens in your browser session
-    
-    📝 **Don't have a GROQ API Key?**
-    
-    Visit [Groq Console](https://console.groq.com/keys) to create a free key with limited quota
-    
-    🔐 **Privacy Policy**
-    
-    For Groq APIs privacy details, refer to [Groq Privacy Policy](https://groq.com/privacy-policy)
     """)
     
-    # Handle API key initialization
-    # Priority: 1) User input (sidebar) > 2) Session state (if explicitly set) > 3) .env (local only)
-    
-    api_key_to_use = None
-    key_source = None
-    
-    if api_key_input and api_key_input.strip():
-        # User entered key in sidebar - use it and store in session
-        api_key_to_use = api_key_input.strip()
-        key_source = "sidebar"
-        st.session_state.user_api_key = api_key_to_use  # Store for this session
-        st.success("✅ Using provided API key")
-    elif st.session_state.get('user_api_key'):
-        # Use previously entered API key from this session (user already entered it)
-        api_key_to_use = st.session_state.user_api_key
-        key_source = "session"
-        st.info("ℹ️ Using API key from current session")
-    elif not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY", "").strip():
-        # Only check .env file for local development (not on Streamlit Cloud)
-        api_key_to_use = os.getenv("GROQ_API_KEY").strip()
-        key_source = ".env"
-        st.info("ℹ️ Using API key from .env file (local development)")
-        # Don't store .env key in session state for security
-    else:
-        # No API key available
-        api_key_to_use = None
-        key_source = None
-        st.warning("⚠️ No API key configured. Please enter your GROQ API key above.")
-    
-    # Initialize LLM with the selected API key
-    if api_key_to_use:
+    # Initialize LLM with the selected configuration
+    if api_key_to_use or (provider == "Groq" and not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY")):
         from utils.llm_config import get_llm
         try:
-            new_llm = get_llm(api_key_to_use)
+            if provider == "Groq":
+                new_llm = get_llm(provider="groq", api_key=api_key_to_use)
+            else:
+                new_llm = get_llm(
+                    provider="azure", 
+                    api_key=api_key_to_use,
+                    endpoint=azure_params.get("endpoint"),
+                    deployment_name=azure_params.get("deployment_name"),
+                    api_version=azure_params.get("api_version")
+                )
+            
             # Update all agents with new LLM
             st.session_state.requirement_agent.update_llm(new_llm)
             st.session_state.verification_agent.update_llm(new_llm)
             st.session_state.automation_agent.update_llm(new_llm)
             st.session_state.api_key_valid = True
         except Exception as e:
-            st.error(f"❌ Invalid API key: {str(e)}")
+            st.error(f"❌ Initialization error: {str(e)}")
             st.session_state.api_key_valid = False
             # Clear invalid key from session
             if key_source == "sidebar" or key_source == "session":
@@ -213,7 +270,7 @@ with st.sidebar:
     
     # Version information at bottom of sidebar
     st.divider()
-    st.caption("🔧 **Version 2.0.0** | Jan 2026")
+    st.caption("🔧 **Version 2.1.0** | Jan 2026")
 
 # Test Type Selection
 st.subheader("🎯 Select Test Type")
