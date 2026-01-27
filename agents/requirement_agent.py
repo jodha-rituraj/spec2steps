@@ -5,7 +5,14 @@ Converts requirements into structured Gherkin feature files.
 
 from typing import Dict, Optional, List, Tuple
 from langchain_groq import ChatGroq
-from utils.gherkin_json_utils import json_to_gherkin, gherkin_to_json, validate_gherkin_json
+from utils.gherkin_json_utils import (
+    json_to_gherkin, 
+    gherkin_to_json, 
+    validate_gherkin_json, 
+    apply_feature_modifications,
+    renumber_scenario_ids,
+    has_scenario_id_gaps
+)
 from llm_prompts.requirement_agent import (
     SYSTEM_INSTRUCTION_REQ_AGENT, 
     SYSTEM_INSTRUCTION_FEEDBACK_AGENT,
@@ -263,20 +270,55 @@ class RequirementAgent(BaseAgent):
             }
         )
         
+        print(f"\n🐛 [DEBUG] Requirement Agent (API) LLM Response:\n{result}\n")
+        
         # Parse the response which should have intent, explanation and proposed_feature
         response_data = self._parse_json_response(result)
         
         intent = response_data.get("intent", "change")  # Default to change for backwards compatibility
         explanation = response_data.get("explanation", "I've processed your request.")
         proposed_feature = response_data.get("proposed_feature")
-        
-        # Only validate if there's a proposed feature (not a question)
-        if proposed_feature is not None and intent == "change":
+        modifications = response_data.get("modifications", [])
+
+        # Questions: no changes
+        if intent == "question":
+            return intent, explanation, None
+
+        # Prefer surgical modifications when provided
+        if modifications:
+            try:
+                updated_feature = apply_feature_modifications(current_feature_json, modifications)
+                
+                # Auto-renumber scenario IDs if gaps are detected
+                if has_scenario_id_gaps(updated_feature):
+                    print("🔄 Auto-renumbering scenario IDs to fix gaps...")
+                    updated_feature, id_mapping = renumber_scenario_ids(updated_feature)
+                    if id_mapping:
+                        print(f"   Renumbered scenarios: {id_mapping}")
+                
+                is_valid, errors = validate_gherkin_json(updated_feature)
+                if not is_valid:
+                    print(f"⚠️ JSON validation warnings: {errors}")
+                return "change", explanation, updated_feature
+            except Exception as e:
+                print(f"⚠️ Failed to apply modifications: {e}")
+
+        # Regeneration path when explicitly requested
+        if intent == "regenerate" and proposed_feature is not None:
             is_valid, errors = validate_gherkin_json(proposed_feature)
             if not is_valid:
                 print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return intent, explanation, proposed_feature
+            return intent, explanation, proposed_feature
+
+        # Backward-compatible: accept full proposed feature when present
+        if proposed_feature is not None:
+            is_valid, errors = validate_gherkin_json(proposed_feature)
+            if not is_valid:
+                print(f"⚠️ JSON validation warnings: {errors}")
+            return intent, explanation, proposed_feature
+
+        # No applicable change
+        return intent, explanation, None
 
     def chat_refine_ui_feature_file(
         self,
@@ -324,17 +366,47 @@ class RequirementAgent(BaseAgent):
             }
         )
         
+        print(f"\n🐛 [DEBUG] Requirement Agent (UI) LLM Response:\n{result}\n")
+        
         # Parse the response which should have intent, explanation and proposed_feature
         response_data = self._parse_json_response(result)
         
         intent = response_data.get("intent", "change")  # Default to change for backwards compatibility
         explanation = response_data.get("explanation", "I've processed your request.")
         proposed_feature = response_data.get("proposed_feature")
-        
-        # Only validate if there's a proposed feature (not a question)
-        if proposed_feature is not None and intent == "change":
+        modifications = response_data.get("modifications", [])
+
+        if intent == "question":
+            return intent, explanation, None
+
+        if modifications:
+            try:
+                updated_feature = apply_feature_modifications(current_feature_json, modifications)
+                
+                # Auto-renumber scenario IDs if gaps are detected
+                if has_scenario_id_gaps(updated_feature):
+                    print("🔄 Auto-renumbering scenario IDs to fix gaps...")
+                    updated_feature, id_mapping = renumber_scenario_ids(updated_feature)
+                    if id_mapping:
+                        print(f"   Renumbered scenarios: {id_mapping}")
+                
+                is_valid, errors = validate_gherkin_json(updated_feature)
+                if not is_valid:
+                    print(f"⚠️ JSON validation warnings: {errors}")
+                return "change", explanation, updated_feature
+            except Exception as e:
+                print(f"⚠️ Failed to apply modifications: {e}")
+
+        if intent == "regenerate" and proposed_feature is not None:
             is_valid, errors = validate_gherkin_json(proposed_feature)
             if not is_valid:
                 print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return intent, explanation, proposed_feature
+            return intent, explanation, proposed_feature
+
+        if proposed_feature is not None:
+            is_valid, errors = validate_gherkin_json(proposed_feature)
+            if not is_valid:
+                print(f"⚠️ JSON validation warnings: {errors}")
+            return intent, explanation, proposed_feature
+
+        return intent, explanation, None
