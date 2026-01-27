@@ -267,39 +267,41 @@ with st.sidebar:
     
     # Version information at bottom of sidebar
     st.divider()
+    
+    # Test Type Selection in Sidebar
+    st.subheader("🎯 Test Type")
+    test_type = st.radio(
+        "Choose the type of test automation:",
+        options=["API", "UI"],
+        index=0 if st.session_state.test_type == "API" else 1,
+        horizontal=True,
+        help="API: REST API testing with RestAssured | UI: Web UI testing with Selenium WebDriver",
+        key="sidebar_test_type"
+    )
+    st.session_state.test_type = test_type
+
+    # Show appropriate info based on selection
+    if test_type == "API":
+        st.info("📡 **API Testing Mode**\nRestAssured, Cucumber, TestNG")
+    else:
+        st.info("🌐 **UI Testing Mode**\nSelenium WebDriver, Cucumber, TestNG")
+
+    st.divider()
+
+    # Workflow Selection in Sidebar
+    st.subheader("🔀 Workflow")
+    workflow_type = st.radio(
+        "What would you like to generate?",
+        options=["Feature File", "Scripts Only"],
+        index=0 if st.session_state.workflow_type == "Feature File" else 1,
+        horizontal=True,
+        help="Feature File: Generate feature file from requirements first, then scripts | Scripts Only: Generate scripts from an existing feature file",
+        key="sidebar_workflow"
+    )
+    st.session_state.workflow_type = workflow_type
+    
+    st.divider()
     st.caption("🔧 **Version 2.1.0** | Jan 2026")
-
-# Test Type Selection
-st.subheader("🎯 Select Test Type")
-test_type = st.radio(
-    "Choose the type of test automation:",
-    options=["API", "UI"],
-    index=0 if st.session_state.test_type == "API" else 1,
-    horizontal=True,
-    help="API: REST API testing with RestAssured | UI: Web UI testing with Selenium WebDriver"
-)
-st.session_state.test_type = test_type
-
-# Show appropriate info based on selection
-if test_type == "API":
-    st.info("📡 **API Testing Mode**: Will generate feature files for REST API testing using RestAssured, Cucumber, and TestNG")
-else:
-    st.info("🌐 **UI Testing Mode**: Will generate feature files for Web UI testing using Selenium WebDriver, Cucumber, and TestNG")
-
-# st.divider()
-
-# Workflow Selection
-st.subheader("🔀 Select Workflow")
-workflow_type = st.radio(
-    "What would you like to generate?",
-    options=["Feature File", "Scripts Only"],
-    index=0 if st.session_state.workflow_type == "Feature File" else 1,
-    horizontal=True,
-    help="Feature File: Generate feature file from requirements first, then scripts | Scripts Only: Generate scripts from an existing feature file"
-)
-st.session_state.workflow_type = workflow_type
-
-# st.divider()
 
 # =============================================
 # WORKFLOW 1: Feature File Generation (Default)
