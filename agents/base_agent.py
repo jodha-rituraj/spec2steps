@@ -102,12 +102,34 @@ class BaseAgent:
         
         response = response.strip()
         
+        # Find the first { or [ to identify start of JSON
+        json_start = -1
+        for i, char in enumerate(response):
+            if char in ['{', '[']:
+                json_start = i
+                break
+        
+        if json_start > 0:
+            response = response[json_start:]
+        
+        # Find the last } or ] to identify end of JSON
+        json_end = -1
+        for i in range(len(response) - 1, -1, -1):
+            if response[i] in ['}', ']']:
+                json_end = i + 1
+                break
+        
+        if json_end > 0:
+            response = response[:json_end]
+        
+        response = response.strip()
+        
         try:
             json_data = json.loads(response)
             return json_data
         except json.JSONDecodeError as e:
             print(f"❌ Failed to parse JSON from LLM: {e}")
-            print(f"Raw result: {response[:200]}...")
+            print(f"Raw result (first 300 chars): {response[:300]}...")
             
             if fallback is not None:
                 return fallback

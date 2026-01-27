@@ -353,7 +353,129 @@ def apply_json_modification(script_json: Dict, modification: Dict) -> Dict:
                 method["parameters"] = new_params
                 break
     
+    elif action == "update_method_scenario_id":
+        method_id = modification.get("method_id")
+        new_scenario_id = modification.get("new_scenario_id")
+        for method in result["methods"]:
+            if method.get("id") == method_id:
+                method["scenarioId"] = new_scenario_id
+                break
+    
     return result
+
+
+def update_script_scenario_references(script_json: Dict, id_mapping: Dict[str, str]) -> Dict:
+    """
+    Update all method scenarioId references in a script JSON based on ID mapping.
+    
+    Useful when feature file scenarios are renumbered - this updates the script
+    to maintain consistency.
+    
+    Args:
+        script_json: Script JSON structure
+        id_mapping: Dict mapping old_scenario_id -> new_scenario_id
+        
+    Returns:
+        Updated script JSON with corrected scenarioId references
+    """
+    import copy
+    result = copy.deepcopy(script_json)
+    
+    for method in result.get("methods", []):
+        old_scenario_id = method.get("scenarioId")
+        if old_scenario_id and old_scenario_id in id_mapping:
+            method["scenarioId"] = id_mapping[old_scenario_id]
+    
+    return result
+
+
+def find_orphaned_methods(script_json: Dict, valid_scenario_ids: List[str]) -> List[Dict]:
+    """
+    Find methods in script that reference non-existent scenarios.
+    
+    Args:
+        script_json: Script JSON structure
+        valid_scenario_ids: List of valid scenario IDs from feature file
+        
+    Returns:
+        List of method objects that have invalid scenarioId references
+    """
+    valid_ids_set = set(valid_scenario_ids)
+    orphaned = []
+    
+    for method in script_json.get("methods", []):
+        scenario_id = method.get("scenarioId")
+        if scenario_id and scenario_id not in valid_ids_set:
+            orphaned.append(method)
+    
+    return orphaned
+
+
+def validate_scenario_script_consistency(
+    feature_json: Dict, 
+    script_json: Dict
+) -> Tuple[bool, List[str]]:
+    """
+    Validate that script methods and feature scenarios are consistent.
+    
+    Checks for:
+    - Orphaned methods (referencing deleted scenarios)
+    - Missing implementations (scenarios without methods)
+    - Scenario ID numbering gaps
+    
+    Args:
+        feature_json: Feature file JSON structure
+        script_json: Script JSON structure
+        
+    Returns:
+        Tuple of (is_valid, warnings)
+        - is_valid: True if no critical issues found
+        - warnings: List of warning/error messages
+    """
+    warnings = []
+    is_valid = True
+    
+    # Get valid scenario IDs from feature
+    scenarios = feature_json.get("scenarios", [])
+    valid_scenario_ids = {s.get("id") for s in scenarios if s.get("id")}
+    
+    # Check for gaps in scenario numbering
+    expected_ids = {f"scenario_{i}" for i in range(1, len(scenarios) + 1)}
+    if valid_scenario_ids != expected_ids:
+        warnings.append(
+            f"⚠️ Scenario ID numbering has gaps. Expected {sorted(expected_ids)}, "
+            f"but found {sorted(valid_scenario_ids)}"
+        )
+        is_valid = False
+    
+    # Find orphaned methods
+    orphaned = find_orphaned_methods(script_json, list(valid_scenario_ids))
+    if orphaned:
+        for method in orphaned:
+            warnings.append(
+                f"⚠️ Method '{method.get('name')}' (id: {method.get('id')}) "
+                f"references deleted scenario '{method.get('scenarioId')}'"
+            )
+        is_valid = False
+    
+    # Find scenarios without implementations
+    methods = script_json.get("methods", [])
+    implemented_scenarios = {m.get("scenarioId") for m in methods if m.get("scenarioId")}
+    missing_implementations = valid_scenario_ids - implemented_scenarios
+    
+    if missing_implementations:
+        for scenario_id in sorted(missing_implementations):
+            # Find scenario name
+            scenario_name = next(
+                (s.get("name", "Unknown") for s in scenarios if s.get("id") == scenario_id),
+                "Unknown"
+            )
+            warnings.append(
+                f"ℹ️ Scenario '{scenario_id}' ({scenario_name}) has no corresponding "
+                f"methods in the script"
+            )
+    
+    return is_valid, warnings
 
 
 def get_json_diff(old_json: Dict, new_json: Dict) -> Dict:

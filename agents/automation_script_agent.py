@@ -9,6 +9,7 @@ Supports two modes:
 
 import re
 import json
+import sys
 import difflib
 from typing import Dict, List, Tuple, Optional, Union
 from langchain_groq import ChatGroq
@@ -21,7 +22,10 @@ from utils.java_json_utils import (
     merge_script_jsons, 
     apply_json_modification,
     get_json_diff,
-    validate_script_json
+    validate_script_json,
+    update_script_scenario_references,
+    find_orphaned_methods,
+    validate_scenario_script_consistency
 )
 from features.parser import GherkinScenarioParser
 from features.merger import JavaFileMerger
@@ -382,8 +386,17 @@ class AutomationScriptAgent(BaseAgent):
         Raises:
             ValueError: If LLM is not initialized
         """
+        
         if self.llm is None:
             raise ValueError("LLM not initialized. Please provide a valid API key.")
+        
+        # Handle case where current_script_json might be a string (shouldn't happen, but defensive)
+        if isinstance(current_script_json, str):
+            print(f"⚠️ WARNING: current_script_json is a string, attempting to parse...")
+            try:
+                current_script_json = json.loads(current_script_json)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"current_script_json is a string but not valid JSON: {e}")
         
         # Format chat history
         chat_history = self._format_script_chat_history(chat_messages)
@@ -395,12 +408,17 @@ class AutomationScriptAgent(BaseAgent):
         chain = prompt | self.llm
         
         # Invoke LLM to get modifications
+        # Use replace() instead of format() to avoid conflicts with JSON curly braces
+        system_instruction = SYSTEM_INSTRUCTION_CHAT_SCRIPT_REFINEMENT_JSON.replace(
+            "{CURRENT_SCRIPT_JSON}", json.dumps(current_script_json, indent=2)
+        ).replace(
+            "{CHAT_HISTORY}", chat_history
+        ).replace(
+            "{USER_MESSAGE}", user_message
+        )
+        
         ai_message = chain.invoke({
-            "SYSTEM_INSTRUCTION": SYSTEM_INSTRUCTION_CHAT_SCRIPT_REFINEMENT_JSON.format(
-                CURRENT_SCRIPT_JSON=json.dumps(current_script_json, indent=2),
-                CHAT_HISTORY=chat_history,
-                USER_MESSAGE=user_message
-            )
+            "SYSTEM_INSTRUCTION": system_instruction
         })
         
         # Extract content and reasoning from AIMessage
@@ -409,14 +427,21 @@ class AutomationScriptAgent(BaseAgent):
         
         # Parse the JSON response
         try:
-            result = self._clean_json_response(result)
-            parsed = json.loads(result)
+            cleaned_result = self._clean_json_response(result)
+            parsed = json.loads(cleaned_result)
             
             intent = parsed.get("intent", "change")
             explanation = parsed.get("explanation", "I've processed your request.")
             modifications = parsed.get("modifications", [])
+            proposed_script = parsed.get("proposed_script_json") or parsed.get("proposed_script")
             
             if intent == "question" or not modifications:
+                # If user explicitly asked to regenerate, prefer the proposed script
+                if intent == "regenerate" and proposed_script is not None:
+                    is_valid, errors = validate_script_json(proposed_script)
+                    if not is_valid:
+                        print(f"Script JSON validation errors: {errors}")
+                    return (intent, reasoning, explanation, proposed_script)
                 return (intent, reasoning, explanation, None)
             
             # Apply modifications deterministically
@@ -426,17 +451,48 @@ class AutomationScriptAgent(BaseAgent):
                     modified_json = apply_json_modification(modified_json, mod)
                 except Exception as e:
                     print(f"Warning: Failed to apply modification {mod}: {e}")
+
+            is_valid, errors = validate_script_json(modified_json)
+            if not is_valid:
+                print(f"Script JSON validation errors: {errors}")
             
             return ("change", reasoning, explanation, modified_json)
             
         except json.JSONDecodeError as e:
-            print(f"JSON parse error in chat_refine_script_json: {e}")
-            print(f"Raw response: {result[:500]}...")
+            print(f"\n{'='*80}", flush=True)
+            print(f"❌ JSON DECODE ERROR in chat_refine_script_json", flush=True)
+            print(f"Error message: {e.msg}", flush=True)
+            print(f"Error position: line {e.lineno}, column {e.colno}", flush=True)
+            print(f"Document position: {e.pos}", flush=True)
+            print(f"Full error: {str(e)}", flush=True)
+            print(f"{'='*80}\n", flush=True)
+            
+            if 'cleaned_result' in locals():
+                print(f"\n🔍 Cleaned response (first 1000 chars):\n{cleaned_result[:1000]}", flush=True)
+                print(f"\n🔍 Cleaned response (last 500 chars):\n{cleaned_result[-500:]}", flush=True)
+            else:
+                print(f"\n🔍 Raw result (first 1000 chars):\n{result[:1000]}", flush=True)
+            
+            sys.stdout.flush()
             
             # Fallback to complex modification
+            print(f"\n⚠️ Falling back to _complex_script_modification_json", flush=True)
             return self._complex_script_modification_json(
                 current_script_json, user_message
             )
+        except Exception as e:
+            print(f"\n{'='*80}", flush=True)
+            print(f"❌ UNEXPECTED ERROR in chat_refine_script_json", flush=True)
+            print(f"Error type: {type(e).__name__}", flush=True)
+            print(f"Error message: {str(e)}", flush=True)
+            print(f"Full traceback:", flush=True)
+            import traceback
+            traceback.print_exc()
+            print(f"{'='*80}\n", flush=True)
+            sys.stdout.flush()
+            
+            # Re-raise to let the caller handle it
+            raise
     
     def _complex_script_modification_json(
         self,
@@ -508,13 +564,48 @@ class AutomationScriptAgent(BaseAgent):
             return None
     
     def _clean_json_response(self, response: str) -> str:
-        """Clean a JSON response by removing markdown code blocks."""
+        """Clean a JSON response by removing markdown code blocks and extra formatting."""
+        if not response:
+            return ""
+            
+        # Strip whitespace
         response = response.strip()
         
-        # Remove markdown code blocks
+        # Remove markdown code blocks if present
         if response.startswith("```"):
-            response = re.sub(r'^```(?:json)?\s*', '', response)
-            response = re.sub(r'\s*```$', '', response)
+            # Remove opening code fence
+            lines = response.split('\n')
+            if lines[0].startswith("```"):
+                lines = lines[1:]  # Remove first line
+            
+            # Remove closing code fence
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]  # Remove last line
+            
+            response = '\n'.join(lines).strip()
+        
+        # Find first { or [ and last } or ]
+        first_brace = response.find('{')
+        first_bracket = response.find('[')
+        
+        # Determine which comes first
+        if first_brace == -1:
+            json_start = first_bracket
+        elif first_bracket == -1:
+            json_start = first_brace
+        else:
+            json_start = min(first_brace, first_bracket)
+        
+        if json_start > 0:
+            response = response[json_start:]
+        
+        # Find last } or ]
+        last_brace = response.rfind('}')
+        last_bracket = response.rfind(']')
+        json_end = max(last_brace, last_bracket)
+        
+        if json_end > 0 and json_end < len(response) - 1:
+            response = response[:json_end + 1]
         
         return response.strip()
     
@@ -1048,3 +1139,59 @@ class AutomationScriptAgent(BaseAgent):
         diff_output = self.generate_unified_diff(generated_java_class, refactored_code)
         
         return (diff_output, refactored_code)
+    
+    def validate_with_feature(
+        self, 
+        feature_json: Dict, 
+        script_json: Dict
+    ) -> Tuple[bool, List[str]]:
+        """
+        Validate that a script JSON is consistent with its feature file.
+        
+        Checks for orphaned methods, missing implementations, and ID gaps.
+        
+        Args:
+            feature_json: Feature file JSON structure
+            script_json: Script JSON structure
+            
+        Returns:
+            Tuple of (is_valid, warnings)
+        """
+        return validate_scenario_script_consistency(feature_json, script_json)
+    
+    def sync_script_with_feature(
+        self,
+        feature_json: Dict,
+        script_json: Dict,
+        id_mapping: Optional[Dict[str, str]] = None
+    ) -> Tuple[Dict, List[str]]:
+        """
+        Synchronize script with feature file after scenario changes.
+        
+        Updates scenarioId references if id_mapping is provided,
+        and returns warnings about inconsistencies.
+        
+        Args:
+            feature_json: Feature file JSON structure
+            script_json: Script JSON structure
+            id_mapping: Optional mapping of old_scenario_id -> new_scenario_id
+            
+        Returns:
+            Tuple of (updated_script_json, warnings)
+        """
+        updated_script = script_json
+        
+        # Update scenario references if mapping provided
+        if id_mapping:
+            updated_script = update_script_scenario_references(script_json, id_mapping)
+            print(f"🔄 Updated script scenario references: {id_mapping}")
+        
+        # Validate consistency and get warnings
+        is_valid, warnings = validate_scenario_script_consistency(feature_json, updated_script)
+        
+        if not is_valid:
+            print("⚠️ Script-Feature consistency issues detected:")
+            for warning in warnings:
+                print(f"   {warning}")
+        
+        return updated_script, warnings

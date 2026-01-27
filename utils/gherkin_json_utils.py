@@ -4,7 +4,53 @@ This module enables structured, surgical edits to test scenarios.
 """
 
 import json
-from typing import Dict, List, Optional, Any
+from copy import deepcopy
+from typing import Dict, List, Optional, Any, Tuple
+
+
+def renumber_scenario_ids(feature_json: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Renumber scenario IDs to be sequential (scenario_1, scenario_2, ...).
+    Useful after deletions or when LLM generates inconsistent IDs.
+    
+    Args:
+        feature_json: Feature JSON structure with scenarios
+        
+    Returns:
+        Tuple of (updated_feature_json, id_mapping)
+        - updated_feature_json: Feature JSON with renumbered scenario IDs
+        - id_mapping: Dict mapping old_id -> new_id for script updates
+    """
+    updated = deepcopy(feature_json)
+    id_mapping = {}
+    
+    scenarios = updated.get("scenarios", [])
+    for i, scenario in enumerate(scenarios, 1):
+        old_id = scenario.get("id", f"scenario_{i}")
+        new_id = f"scenario_{i}"
+        
+        if old_id != new_id:
+            id_mapping[old_id] = new_id
+            scenario["id"] = new_id
+    
+    return updated, id_mapping
+
+
+def has_scenario_id_gaps(feature_json: Dict[str, Any]) -> bool:
+    """
+    Check if there are gaps in scenario ID numbering.
+    
+    Args:
+        feature_json: Feature JSON structure
+        
+    Returns:
+        True if gaps exist (e.g., scenario_1, scenario_3, scenario_5)
+    """
+    scenarios = feature_json.get("scenarios", [])
+    expected_ids = {f"scenario_{i}" for i in range(1, len(scenarios) + 1)}
+    actual_ids = {s.get("id", "") for s in scenarios}
+    
+    return expected_ids != actual_ids
 
 
 def normalize_feature_json(json_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,6 +127,117 @@ def normalize_feature_json(json_data: Dict[str, Any]) -> Dict[str, Any]:
             bg["steps"] = []
     
     return normalized
+
+
+def _resolve_path(root: Any, path: str) -> Any:
+    """Resolve a slash-delimited path (JSON Pointer style without leading slash).
+
+    Supports list indices and dict keys. Returns the parent container and final key/index.
+    Raises KeyError/IndexError/TypeError on invalid paths so callers can handle gracefully.
+    """
+    if path.startswith("/"):
+        path = path[1:]
+    parts = [p for p in path.split("/") if p != ""]
+
+    parent = root
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+        
+        # Special case: "-" means "append to end" for lists, but only as the LAST segment
+        if part == "-" and isinstance(parent, list) and is_last:
+            return parent, "-"
+
+        # Attempt integer index when working with lists
+        if isinstance(parent, list):
+            try:
+                idx = int(part)
+                if is_last:
+                    return parent, idx
+                parent = parent[idx]
+            except ValueError:
+                 raise TypeError(f"List index must be integer, got '{part}'")
+        elif isinstance(parent, dict):
+            if is_last:
+                return parent, part
+            parent = parent[part]
+        else:
+            raise TypeError(f"Cannot traverse into non-container at '{part}'")
+    # If path empty, point to root
+    return None, None
+
+
+def apply_feature_modifications(current_feature_json: Dict[str, Any], modifications: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Apply a list of surgical modifications to a feature JSON structure.
+
+    Supported ops (minimal set):
+      - add:     {"op": "add", "path": "feature/description", "value": "..."}
+      - replace: {"op": "replace", "path": "scenarios/0/steps/2/text", "value": "..."}
+      - remove:  {"op": "remove", "path": "scenarios/1/tags/0"}
+
+    Paths are slash-delimited (similar to JSON Pointer without the leading slash).
+    Lists use numeric indices. The operation order is preserved.
+    """
+    updated = deepcopy(current_feature_json)
+
+    for mod in modifications or []:
+        op = mod.get("op")
+        path = mod.get("path", "")
+
+        if not op or not path:
+            print(f"⚠️ Skipping modification without op/path: {mod}")
+            continue
+
+        try:
+            container, key = _resolve_path(updated, path)
+        except Exception as e:
+            print(f"⚠️ Failed to resolve path '{path}' for op '{op}': {e}")
+            continue
+
+        # If container is None, it means path was empty; skip
+        if container is None:
+            print(f"⚠️ Skipping modification with empty path: {mod}")
+            continue
+
+        if op == "add":
+            value = mod.get("value")
+            if isinstance(container, list):
+                if key == "-":
+                    container.append(value)
+                else:
+                    idx = int(key)
+                    if idx >= 0 and idx <= len(container):
+                        container.insert(idx, value)
+                    else:
+                        print(f"⚠️ Add index out of range for path '{path}': {idx}")
+            else:
+                container[key] = value
+
+        elif op == "replace":
+            value = mod.get("value")
+            if isinstance(container, list):
+                # Replace doesn't support append via "-", so we expect int
+                idx = int(key)
+                if 0 <= idx < len(container):
+                    container[idx] = value
+                else:
+                    print(f"⚠️ Replace index out of range for path '{path}': {idx}")
+            else:
+                container[key] = value
+
+        elif op == "remove":
+            if isinstance(container, list):
+                idx = int(key)
+                if 0 <= idx < len(container):
+                    container.pop(idx)
+                else:
+                    print(f"⚠️ Remove index out of range for path '{path}': {idx}")
+            else:
+                container.pop(key, None)
+
+        else:
+            print(f"⚠️ Unknown op '{op}' - skipping")
+
+    return updated
 
 
 def json_to_gherkin(json_data: Dict[str, Any]) -> str:

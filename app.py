@@ -262,9 +262,6 @@ with st.sidebar:
         except Exception as e:
             st.error(f"❌ Initialization error: {str(e)}")
             st.session_state.api_key_valid = False
-            # Clear invalid key from session
-            if key_source == "sidebar" or key_source == "session":
-                st.session_state.user_api_key = None
     else:
         st.session_state.api_key_valid = False
     
@@ -437,8 +434,7 @@ else:  # Scripts Only
             st.warning("Please provide a feature file before generating scripts.")
         else:
             # Check if LLM is initialized
-            import utils.utils
-            if utils.utils.llm is None:
+            if st.session_state.automation_agent.llm is None:
                 st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
                 st.stop()
             
@@ -768,8 +764,8 @@ if st.session_state.feature_files and st.session_state.verification_outputs and 
                         "content": explanation
                     })
                     
-                    # Only show Apply/Reject if it's a change request with valid proposed feature
-                    if intent == "change" and proposed_json is not None:
+                    # Only show Apply/Reject if it's a change or regenerate request with valid proposed feature
+                    if (intent == "change" or intent == "regenerate") and proposed_json is not None:
                         st.session_state.proposed_feature_json = proposed_json
                         st.session_state.proposed_explanation = explanation
                         st.session_state.awaiting_confirmation = True
@@ -1171,13 +1167,14 @@ if st.session_state.show_scripts_section:
                 with st.spinner("🤔 Thinking (deterministic JSON modifications)..."):
                     try:
                         # Use JSON IR-based refinement if we have merged_script_json
-                        if st.session_state.merged_script_json:
-                            intent, reasoning, explanation, proposed_json = st.session_state.automation_agent.chat_refine_script_json(
+                        if st.session_state.merged_script_json:                            
+                            # Write to file for debugging
+                            result = st.session_state.automation_agent.chat_refine_script_json(
                                 current_script_json=st.session_state.merged_script_json,
                                 chat_messages=st.session_state.script_chat_messages[:-1],
                                 user_message=script_user_input.strip()
-                            )
-                            
+                            )                            
+                            intent, reasoning, explanation, proposed_json = result                            
                             # Store reasoning for display
                             st.session_state.script_reasoning = reasoning
                             
@@ -1202,8 +1199,8 @@ if st.session_state.show_scripts_section:
                             "content": explanation
                         })
                         
-                        # Only show Apply/Reject if it's a change request with valid proposed script
-                        if intent == "change" and proposed_script is not None:
+                        # Only show Apply/Reject if it's a change or regenerate request with valid proposed script
+                        if (intent == "change" or intent == "regenerate") and proposed_script is not None:
                             st.session_state.proposed_script = proposed_script
                             st.session_state.script_proposed_explanation = explanation
                             st.session_state.script_awaiting_confirmation = True
@@ -1215,6 +1212,7 @@ if st.session_state.show_scripts_section:
                         st.session_state.script_feedback_counter += 1
                         
                     except Exception as e:
+                        # Log full exception details to file
                         st.error(f"❌ Error: {str(e)}")
                         st.session_state.script_chat_messages.append({
                             "role": "assistant",
