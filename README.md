@@ -2,6 +2,10 @@
 
 Turn plain-language requirements into Gherkin feature files and Java step definitions, then refine both through chat. Supports API tests (REST Assured) and UI tests (Selenium), with Cucumber and TestNG.
 
+![Demo: requirements to feature file to Java, with chat edits shown as diffs](docs/demo.gif)
+
+<sub>Recorded with `openai/gpt-oss-120b` on Groq using [`examples/login_api_requirements.md`](examples/login_api_requirements.md).</sub>
+
 ## How it works
 
 ```mermaid
@@ -83,6 +87,7 @@ The end-to-end test drives the Streamlit app through the whole flow, including b
 - The Java parser is regex-based and assumes one top-level class per file in common step-definition style. It isn't a full Java parser.
 - Generated code targets a typical REST Assured / Selenium + Cucumber + TestNG setup. Use the "additional context" box to describe your own framework's helpers and conventions.
 - Review generated tests before using them. The verification agent reduces gaps but doesn't remove them.
+- Groq's free tier allows 8,000 tokens per minute. Chat edits on large generated classes can exceed that; use OpenRouter, Azure OpenAI or a paid Groq tier for bigger features.
 
 ## Future work
 
