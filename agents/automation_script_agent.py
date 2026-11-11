@@ -65,7 +65,7 @@ class AutomationScriptAgent(BaseAgent):
         # Filled with str.replace (the inserted script is JSON), so unescape the template's {{ }} first.
         instruction = (
             SYSTEM_INSTRUCTION_CHAT_SCRIPT_REFINEMENT_JSON.replace("{{", "{").replace("}}", "}")
-            .replace("{CURRENT_SCRIPT_JSON}", json.dumps(current_script_json, indent=2))
+            .replace("{CURRENT_SCRIPT_JSON}", json.dumps(current_script_json, separators=(",", ":")))
             .replace("{CHAT_HISTORY}", _format_chat_history(chat_messages))
             .replace("{USER_MESSAGE}", user_message)
         )
@@ -139,7 +139,7 @@ class AutomationScriptAgent(BaseAgent):
     def _complex_script_modification_json(self, current_script_json: Dict, user_request: str):
         content, reasoning = self._invoke_with_reasoning(
             SYSTEM_INSTRUCTION_COMPLEX_SCRIPT_MODIFICATION_JSON.format(
-                CURRENT_SCRIPT_JSON=json.dumps(current_script_json, indent=2),
+                CURRENT_SCRIPT_JSON=json.dumps(current_script_json, separators=(",", ":")),
                 USER_REQUEST=user_request,
             )
         )
