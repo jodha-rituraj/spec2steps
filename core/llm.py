@@ -2,11 +2,13 @@ import os
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 
 load_dotenv()
 
 GROQ_MODEL = "openai/gpt-oss-120b"
+OPENROUTER_MODEL = "openai/gpt-oss-120b"
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
 REASONING_EFFORTS = ("low", "medium", "high")
 # Free tiers rate-limit by tokens per minute; the SDKs honour Retry-After between attempts.
 MAX_RETRIES = 6
@@ -20,6 +22,7 @@ def get_llm(
     api_version=None,
     include_reasoning=True,
     reasoning_effort="medium",
+    model=None,
 ):
     provider = provider.lower()
 
@@ -31,6 +34,18 @@ def get_llm(
         if include_reasoning:
             kwargs["reasoning_effort"] = reasoning_effort if reasoning_effort in REASONING_EFFORTS else "medium"
         return ChatGroq(**kwargs)
+
+    if provider == "openrouter":
+        key = (api_key or os.getenv("OPENROUTER_API_KEY") or "").strip()
+        if not key:
+            raise ValueError("No OpenRouter API key. Enter one in the sidebar or set OPENROUTER_API_KEY.")
+        return ChatOpenAI(
+            api_key=key,
+            base_url=OPENROUTER_URL,
+            model=(model or os.getenv("OPENROUTER_MODEL") or OPENROUTER_MODEL).strip(),
+            temperature=0.6,
+            max_retries=MAX_RETRIES,
+        )
 
     if provider == "azure":
         config = {

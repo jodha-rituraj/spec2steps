@@ -159,3 +159,18 @@ def test_model_errors_are_shown_not_raised(monkeypatch):
     at.text_area[0].input("Some requirement")
     click(at, "Generate Feature File & Verification")
     assert any("Model call failed: Rate limit reached" in e.value for e in at.error)
+
+
+def test_openrouter_provider_can_be_selected(monkeypatch):
+    calls = []
+    llm = FakeListChatModel(responses=[json.dumps(FEATURE), "PERFECT"])
+    monkeypatch.setattr(core.llm, "get_llm", lambda *args, **kwargs: calls.append(kwargs) or llm)
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    at.selectbox[0].set_value("OpenRouter").run()
+    at.text_area[0].input("Users must be able to log in.")
+    click(at, "Generate Feature File & Verification")
+    assert calls[-1] == {"provider": "openrouter", "api_key": "sk-or-test", "model": None}
+    assert any("Scenario: Valid login" in c for c in code_blocks(at, "gherkin"))

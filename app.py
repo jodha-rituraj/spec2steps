@@ -49,7 +49,10 @@ SETTINGS_STATE = {
     "test_type": "API",
     "workflow_type": "Feature File",
     "llm_provider": "Groq",
-    "user_api_key": "",
+    "groq_api_key": "",
+    "openrouter_api_key": "",
+    "openrouter_model": "",
+    "azure_api_key": "",
     "azure_endpoint": "",
     "azure_deployment": "",
     "azure_api_version": "2024-02-01",
@@ -159,13 +162,10 @@ def require_llm():
 def render_sidebar():
     with st.sidebar:
         st.header("Configuration")
-        provider = st.selectbox(
-            "LLM Provider",
-            ["Groq", "Azure OpenAI"],
-            index=0 if st.session_state.llm_provider == "Groq" else 1,
-        )
+        providers = {"Groq": configure_groq, "OpenRouter": configure_openrouter, "Azure OpenAI": configure_azure}
+        provider = st.selectbox("LLM Provider", list(providers), index=list(providers).index(st.session_state.llm_provider))
         st.session_state.llm_provider = provider
-        llm_kwargs = configure_groq() if provider == "Groq" else configure_azure()
+        llm_kwargs = providers[provider]()
 
         st.info("**Privacy**: keys, prompts and conversations are not stored or logged.")
 
@@ -205,38 +205,55 @@ def render_sidebar():
         )
 
 
-def configure_groq():
-    env_key = "" if IS_STREAMLIT_CLOUD else os.getenv("GROQ_API_KEY", "").strip()
+def key_input(name, env_var, state_key, placeholder, signup_url):
+    """Sidebar key field. Returns the key from the field, else from .env (local only), else None."""
+    env_key = "" if IS_STREAMLIT_CLOUD else os.getenv(env_var, "").strip()
     key = st.text_input(
-        "Groq API Key",
+        f"{name} API Key",
         type="password",
-        placeholder="gsk_...",
-        value=st.session_state.user_api_key,
-        help="Get a free key at console.groq.com/keys" + ("" if IS_STREAMLIT_CLOUD else ". Optional if GROQ_API_KEY is set in .env."),
+        placeholder=placeholder,
+        value=st.session_state[state_key],
+        help=f"Get a key at {signup_url}" + ("" if IS_STREAMLIT_CLOUD else f". Optional if {env_var} is set in .env."),
     ).strip()
+    st.session_state[state_key] = key
     if key:
-        st.session_state.user_api_key = key
-        st.success("Using provided Groq key")
-        return {"provider": "groq", "api_key": key}
+        st.success(f"Using provided {name} key")
+        return key
     if env_key:
-        st.info("Using Groq key from .env")
-        return {"provider": "groq", "api_key": env_key}
-    st.warning("No Groq API key configured.")
+        st.info(f"Using {name} key from .env")
+        return env_key
+    st.warning(f"No {name} API key configured.")
     return None
+
+
+def configure_groq():
+    key = key_input("Groq", "GROQ_API_KEY", "groq_api_key", "gsk_...", "console.groq.com/keys")
+    return {"provider": "groq", "api_key": key} if key else None
+
+
+def configure_openrouter():
+    key = key_input("OpenRouter", "OPENROUTER_API_KEY", "openrouter_api_key", "sk-or-...", "openrouter.ai/keys")
+    st.session_state.openrouter_model = st.text_input(
+        "Model",
+        value=st.session_state.openrouter_model,
+        placeholder=os.getenv("OPENROUTER_MODEL") or "openai/gpt-oss-120b",
+        help="Any OpenRouter model id. Defaults to openai/gpt-oss-120b.",
+    ).strip()
+    return {"provider": "openrouter", "api_key": key, "model": st.session_state.openrouter_model or None} if key else None
 
 
 def configure_azure():
     s = st.session_state
-    s.user_api_key = st.text_input("Azure OpenAI API Key", type="password", value=s.user_api_key)
+    s.azure_api_key = st.text_input("Azure OpenAI API Key", type="password", value=s.azure_api_key)
     s.azure_endpoint = st.text_input("Endpoint", placeholder="https://your-resource.openai.azure.com/", value=s.azure_endpoint)
     s.azure_deployment = st.text_input("Deployment Name", placeholder="e.g. gpt-4o", value=s.azure_deployment)
     s.azure_api_version = st.text_input("API Version", value=s.azure_api_version)
 
-    if s.user_api_key and s.azure_endpoint and s.azure_deployment:
+    if s.azure_api_key and s.azure_endpoint and s.azure_deployment:
         st.success("Azure configuration provided")
         return {
             "provider": "azure",
-            "api_key": s.user_api_key,
+            "api_key": s.azure_api_key,
             "endpoint": s.azure_endpoint,
             "deployment_name": s.azure_deployment,
             "api_version": s.azure_api_version,

@@ -51,8 +51,9 @@ cp .env.example .env   # add a Groq key, or paste one into the sidebar later
 streamlit run app.py
 ```
 
-You need Python 3.10+ and an API key from either:
-- [Groq](https://console.groq.com/keys), which has a free tier and uses `openai/gpt-oss-120b`, or
+You need Python 3.10+ and an API key from one of:
+- [Groq](https://console.groq.com/keys): free tier, uses `openai/gpt-oss-120b`.
+- [OpenRouter](https://openrouter.ai/keys): any model it hosts; defaults to `openai/gpt-oss-120b`.
 - Azure OpenAI.
 
 Try it with [`examples/login_api_requirements.md`](examples/login_api_requirements.md).
