@@ -293,7 +293,7 @@ def gherkin_to_json(gherkin_text: str) -> Dict[str, Any]:
     current_section = None
     current_scenario = None
     current_examples = None
-    feature_tags = []
+    pending_tags = []  # tags belong to the Feature/Scenario line that follows them
 
     i = 0
     while i < len(lines):
@@ -304,31 +304,24 @@ def gherkin_to_json(gherkin_text: str) -> Dict[str, Any]:
             continue
 
         if line.startswith("@"):
-            tags = line.split()
-            if current_scenario is None:
-                feature_tags = tags
-            else:
-                if "tags" not in current_scenario:
-                    current_scenario["tags"] = []
-                current_scenario["tags"].extend(tags)
+            pending_tags.extend(line.split())
             i += 1
             continue
 
         if line.startswith("Feature:"):
-            feature_name = line.replace("Feature:", "").strip()
-            json_data["feature"]["name"] = feature_name
-            if feature_tags:
-                json_data["feature"]["tags"] = feature_tags
+            json_data["feature"]["name"] = line.replace("Feature:", "").strip()
+            if pending_tags:
+                json_data["feature"]["tags"], pending_tags = pending_tags, []
 
             description_lines = []
             i += 1
             while i < len(lines):
                 desc_line = lines[i].strip()
-                if desc_line and not desc_line.startswith("Background:") and not desc_line.startswith("Scenario"):
-                    description_lines.append(desc_line)
-                    i += 1
-                else:
+                if desc_line.startswith(("Background:", "Scenario", "@")):
                     break
+                if desc_line:
+                    description_lines.append(desc_line)
+                i += 1
 
             if description_lines:
                 json_data["feature"]["description"] = "\n".join(description_lines)
@@ -348,6 +341,8 @@ def gherkin_to_json(gherkin_text: str) -> Dict[str, Any]:
                 "name": line.split(":", 1)[1].strip(),
                 "steps": []
             }
+            if pending_tags:
+                current_scenario["tags"], pending_tags = pending_tags, []
             json_data["scenarios"].append(current_scenario)
             i += 1
             continue
