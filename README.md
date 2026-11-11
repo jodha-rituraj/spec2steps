@@ -1,6 +1,6 @@
-# Requirements to Test Automation
+# spec2steps
 
-Turn plain-language requirements into Gherkin feature files and Java step definitions, then refine both through chat. Supports API tests (REST Assured) and UI tests (Selenium), with Cucumber and TestNG.
+Turn requirements into Gherkin features and Java step definitions (REST Assured, Selenium, Cucumber, TestNG), then refine both through chat with reviewable diffs.
 
 ![Demo: requirements to feature file to Java, with chat edits shown as diffs](docs/demo.gif)
 
@@ -47,8 +47,8 @@ Plain Python applies these ops, so code you didn't mention stays exactly the sam
 ## Quickstart
 
 ```bash
-git clone https://github.com/jodha-rituraj/ai-automation-from-requirements.git
-cd ai-automation-from-requirements
+git clone https://github.com/jodha-rituraj/spec2steps.git
+cd spec2steps
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # add a Groq key, or paste one into the sidebar later
