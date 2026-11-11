@@ -157,10 +157,13 @@ def merge_script_jsons(script_jsons: List[Dict], merged_class_name: str = "Gener
         if not merged["classAnnotations"] and script.get("classAnnotations"):
             merged["classAnnotations"] = script["classAnnotations"]
 
+        source_class = script.get("className")
         for field in script.get("fields", []):
             field_key = (field.get("type", ""), field.get("name", ""))
             if field_key not in seen_fields:
                 field_copy = field.copy()
+                if field_copy.get("initializer"):
+                    field_copy["initializer"] = retarget_class_refs(field_copy["initializer"], source_class, merged_class_name)
                 field_copy["id"] = f"field_{field_counter}"
                 field_counter += 1
                 seen_fields[field_key] = field_copy
@@ -168,6 +171,7 @@ def merge_script_jsons(script_jsons: List[Dict], merged_class_name: str = "Gener
 
         for method in script.get("methods", []):
             method_copy = method.copy()
+            method_copy["body"] = [retarget_class_refs(l, source_class, merged_class_name) for l in method.get("body", [])]
             method_copy["id"] = f"method_{method_counter}"
             method_counter += 1
             merged["methods"].append(method_copy)
@@ -175,6 +179,13 @@ def merge_script_jsons(script_jsons: List[Dict], merged_class_name: str = "Gener
     merged["imports"] = sorted(merged["imports"])
 
     return merged
+
+
+def retarget_class_refs(text: str, old_class: Optional[str], new_class: str) -> str:
+    """Point `Old.class` (e.g. a logger initializer) at the merged class, which is the only one that survives."""
+    if not text or not old_class or old_class == new_class:
+        return text
+    return re.sub(rf"\b{re.escape(old_class)}\.class\b", f"{new_class}.class", text)
 
 
 def apply_json_modification(script_json: Dict, modification: Dict) -> Dict:

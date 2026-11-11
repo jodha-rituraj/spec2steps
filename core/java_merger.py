@@ -1,6 +1,8 @@
 import re
 from typing import List, Optional, Tuple
 
+from core.java_json import retarget_class_refs
+
 INDENT = "    "
 
 
@@ -14,7 +16,7 @@ class JavaFileMerger:
         self.merged_class_name = merged_class_name
 
     def merge(self, java_files: List[str]) -> str:
-        packages, imports, fields, methods = set(), set(), {}, []
+        packages, imports, fields, methods, source_classes = set(), set(), {}, [], []
         class_name = self.merged_class_name
 
         for content in java_files:
@@ -22,21 +24,27 @@ class JavaFileMerger:
             if package:
                 packages.add(package.group(0))
             imports.update(re.findall(r"^import\s+(?:static\s+)?[\w.*]+;", content, re.MULTILINE))
-            if not class_name:
-                match = re.search(r"public\s+class\s+(\w+)", content)
-                class_name = match.group(1) if match else None
+            match = re.search(r"public\s+class\s+(\w+)", content)
+            if match:
+                source_classes.append(match.group(1))
+                class_name = class_name or match.group(1)
 
             class_fields, class_methods = _split_members(content)
             for field in class_fields:
                 fields.setdefault(_field_signature(field), field)
             methods.extend(class_methods)
 
+        class_name = class_name or "MergedClass"
+        for source in source_classes:
+            fields = {k: retarget_class_refs(v, source, class_name) for k, v in fields.items()}
+            methods = [retarget_class_refs(m, source, class_name) for m in methods]
+
         lines = []
         if packages:
             lines += [sorted(packages)[0], ""]
         if imports:
             lines += sorted(imports) + [""]
-        lines += [f"public class {class_name or 'MergedClass'} {{", ""]
+        lines += [f"public class {class_name} {{", ""]
         if fields:
             lines += [_reindent(f, INDENT) for f in fields.values()] + [""]
         if methods:

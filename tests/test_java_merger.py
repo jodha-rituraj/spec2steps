@@ -56,3 +56,10 @@ public class GeneratedTests {
 
 def test_merge_uses_first_class_name_when_none_given():
     assert "public class FirstSteps {" in JavaFileMerger().merge([FIRST, SECOND])
+
+
+def test_merge_points_class_literals_at_the_merged_class():
+    first = FIRST.replace("private Response response;", "private Logger log = LogManager.getLogger(FirstSteps.class);")
+    merged = JavaFileMerger("GeneratedTests").merge([first, SECOND])
+    assert "LogManager.getLogger(GeneratedTests.class)" in merged
+    assert "FirstSteps.class" not in merged

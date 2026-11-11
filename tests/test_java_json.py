@@ -99,3 +99,9 @@ def test_overescaped_body_lines_are_repaired_and_valid_lines_kept():
     assert '.body("{\\"email\\":\\"" + email + "\\"}")' in java
     assert 'String json = "{\\"email\\":\\"" + email + "\\"}";' in java
     assert "char quote = '\"';" in java
+
+
+def test_merge_points_class_literals_at_the_merged_class():
+    merged = merge_script_jsons([java_to_json(JAVA)], "GeneratedTests")
+    assert merged["fields"][0]["initializer"] == "LogManager.getLogger(GeneratedTests.class)"
+    assert "LoginSteps.class" not in json_to_java(merged)
