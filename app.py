@@ -1,1289 +1,647 @@
-import streamlit as st
-import os
-import sys
+import copy
 import difflib
+import os
+
+import streamlit as st
 from dotenv import load_dotenv
 
-# ----------------------------
-# Early Configuration Setup
-# ----------------------------
+from agents import AutomationScriptAgent, RequirementAgent, VerificationAgent
+from core.gherkin_json import gherkin_to_json, json_to_gherkin
+from core.llm import get_llm
 
-# Load .env file only for local development (not on Streamlit Cloud)
-# Check if running on Streamlit Cloud by checking for STREAMLIT_SHARING environment variable
-# or by checking if we're in a Streamlit deployment
-IS_STREAMLIT_CLOUD = os.getenv("STREAMLIT_SHARING") is not None or os.getenv("STREAMLIT_SHARING_BASE_URL") is not None
-
+# On Streamlit Cloud, keys must come from the sidebar, never from a server-side .env.
+IS_STREAMLIT_CLOUD = bool(os.getenv("STREAMLIT_SHARING") or os.getenv("STREAMLIT_SHARING_BASE_URL"))
 if not IS_STREAMLIT_CLOUD:
-    # Only load .env for local development
     load_dotenv()
 
-# Now import utils after setting environment
-from utils.gherkin_json_utils import json_to_gherkin, gherkin_to_json
+DISCLAIMER = "**Disclaimer**: AI can make mistakes. Review all generated output before use."
 
-# Import agent classes
-from agents import RequirementAgent, VerificationAgent, AutomationScriptAgent
+FEATURE_STATE = {
+    "input_requirement": "",
+    "direct_feature_file": "",
+    "feature_files": [],
+    "verification_outputs": [],
+    "current_feature_version_index": 0,
+    "include_verification_in_chat": False,
+    "chat_messages": [],
+    "proposed_feature_json": None,
+    "awaiting_confirmation": False,
+    "feedback_counter": 0,
+    "show_final_edit_section": False,
+    "show_scripts_section": False,
+}
+SCRIPT_STATE = {
+    "user_script_input": "",
+    "script_jsons": [],
+    "java_files": [],
+    "merged_script_json": None,
+    "merged_java_file": None,
+    "script_versions": [],
+    "current_script_version_index": 0,
+    "script_chat_messages": [],
+    "proposed_script": None,
+    "proposed_script_json": None,
+    "script_reasoning": "",
+    "script_awaiting_confirmation": False,
+    "script_feedback_counter": 0,
+}
+SETTINGS_STATE = {
+    "test_type": "API",
+    "workflow_type": "Feature File",
+    "llm_provider": "Groq",
+    "user_api_key": "",
+    "azure_endpoint": "",
+    "azure_deployment": "",
+    "azure_api_version": "2024-02-01",
+    "api_key_valid": False,
+}
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
+API_CONTEXT_HINT = """Provide details like:
+- API endpoint patterns or naming conventions
+- Custom data models or utility classes to use
+- Specific validation rules or assertions needed
+- Custom headers, authentication methods, or payload structures
+- Mock data patterns or test data details
+- Business logic constraints or domain-specific rules"""
 
-st.set_page_config(page_title="End to End AI-Assisted Test Cases & Script Generator", layout="wide")
+UI_CONTEXT_HINT = """Provide details like:
+- Page URL patterns or routing conventions
+- Custom Page Object classes or locator strategies
+- Specific element selectors (CSS, XPath, ID patterns)
+- Custom wait strategies or timeout requirements
+- Browser configuration or driver setup details
+- Special handling for dynamic elements, iframes, or modals"""
 
-st.title("End to End AI-Assisted Test Cases & Script Generator")
 
-# ----------------------------
-# Initialize session state variables FIRST (before sidebar)
-# ----------------------------
-if 'feature_files' not in st.session_state:
-    st.session_state.feature_files = []  # List to store all versions
-if 'verification_outputs' not in st.session_state:
-    st.session_state.verification_outputs = []  # List to store all versions
-if 'input_requirement' not in st.session_state:
-    st.session_state.input_requirement = ""
-if 'show_feedback_section' not in st.session_state:
-    st.session_state.show_feedback_section = False
-if 'show_final_edit_section' not in st.session_state:
-    st.session_state.show_final_edit_section = False
-if 'show_scripts_section' not in st.session_state:
-    st.session_state.show_scripts_section = False
-if 'java_files' not in st.session_state:
-    st.session_state.java_files = []
-if 'merged_java_file' not in st.session_state:
-    st.session_state.merged_java_file = None
-# JSON IR for scripts (new deterministic approach)
-if 'script_jsons' not in st.session_state:
-    st.session_state.script_jsons = []  # List of script JSON objects
-if 'merged_script_json' not in st.session_state:
-    st.session_state.merged_script_json = None  # Merged script JSON
-if 'use_json_ir' not in st.session_state:
-    st.session_state.use_json_ir = True  # Use JSON IR by default
-if 'final_feature_file' not in st.session_state:
-    st.session_state.final_feature_file = None
-if 'user_script_input' not in st.session_state:
-    st.session_state.user_script_input = ""
-if 'show_script_feedback_section' not in st.session_state:
-    st.session_state.show_script_feedback_section = False
-if 'script_diff_outputs' not in st.session_state:
-    st.session_state.script_diff_outputs = []  # Store diff outputs for each script
-if 'feedback_counter' not in st.session_state:
-    st.session_state.feedback_counter = 0  # Counter to reset feedback input
-if 'refactoring_intents' not in st.session_state:
-    st.session_state.refactoring_intents = []  # Store intent for each refactoring iteration
-if 'merged_java_history' not in st.session_state:
-    st.session_state.merged_java_history = []  # Store history of merged Java files for undo
-if 'test_type' not in st.session_state:
-    st.session_state.test_type = "API"  # Default to API testing
-if 'workflow_type' not in st.session_state:
-    st.session_state.workflow_type = "Feature File"  # Default to feature file generation
-if 'direct_feature_file' not in st.session_state:
-    st.session_state.direct_feature_file = ""  # For direct script generation workflow
+def reset_state(*groups):
+    for group in groups:
+        for key, value in group.items():
+            st.session_state[key] = copy.deepcopy(value)
 
-# ----------------------------
-# LLM Configuration session state
-# ----------------------------
-if 'llm_provider' not in st.session_state:
-    st.session_state.llm_provider = "Groq"
-if 'user_api_key' not in st.session_state:
-    st.session_state.user_api_key = ""
-if 'azure_endpoint' not in st.session_state:
-    st.session_state.azure_endpoint = ""
-if 'azure_deployment' not in st.session_state:
-    st.session_state.azure_deployment = ""
-if 'azure_api_version' not in st.session_state:
-    st.session_state.azure_api_version = "2024-02-01"
 
-# ----------------------------
-# Chat-based refinement session state variables
-# ----------------------------
-if 'chat_messages' not in st.session_state:
-    st.session_state.chat_messages = []  # List of {role: 'user'/'assistant', content: str}
-if 'proposed_feature_json' not in st.session_state:
-    st.session_state.proposed_feature_json = None  # Proposed changes from LLM
-if 'proposed_explanation' not in st.session_state:
-    st.session_state.proposed_explanation = ""  # Explanation for proposed changes
-if 'current_feature_version_index' not in st.session_state:
-    st.session_state.current_feature_version_index = 0  # Index of currently displayed feature file version
-if 'include_verification_in_chat' not in st.session_state:
-    st.session_state.include_verification_in_chat = False  # Checkbox for including verification output
-if 'show_chat_refinement' not in st.session_state:
-    st.session_state.show_chat_refinement = False  # Whether to show chat refinement UI
-if 'awaiting_confirmation' not in st.session_state:
-    st.session_state.awaiting_confirmation = False  # Whether we're waiting for user to apply/reject changes
+def init_state():
+    for group in (FEATURE_STATE, SCRIPT_STATE, SETTINGS_STATE):
+        for key, value in group.items():
+            if key not in st.session_state:
+                st.session_state[key] = copy.deepcopy(value)
+    if "requirement_agent" not in st.session_state:
+        st.session_state.requirement_agent = RequirementAgent()
+        st.session_state.verification_agent = VerificationAgent()
+        st.session_state.automation_agent = AutomationScriptAgent()
 
-# ----------------------------
-# Script chat-based refinement session state variables
-# ----------------------------
-if 'script_chat_messages' not in st.session_state:
-    st.session_state.script_chat_messages = []  # Chat messages for script refinement
-if 'proposed_script' not in st.session_state:
-    st.session_state.proposed_script = None  # Proposed script changes from LLM
-if 'proposed_script_json' not in st.session_state:
-    st.session_state.proposed_script_json = None  # Proposed script JSON IR
-if 'script_proposed_explanation' not in st.session_state:
-    st.session_state.script_proposed_explanation = ""  # Explanation for proposed script changes
-if 'script_reasoning' not in st.session_state:
-    st.session_state.script_reasoning = ""  # LLM's thinking/reasoning tokens
-if 'script_awaiting_confirmation' not in st.session_state:
-    st.session_state.script_awaiting_confirmation = False  # Waiting for user to apply/reject script changes
-if 'script_versions' not in st.session_state:
-    st.session_state.script_versions = []  # History of script versions for version navigation
-if 'current_script_version_index' not in st.session_state:
-    st.session_state.current_script_version_index = 0  # Index of currently displayed script version
-if 'script_feedback_counter' not in st.session_state:
-    st.session_state.script_feedback_counter = 0  # Counter to reset script feedback input
 
-# Initialize agents in session state (BEFORE sidebar uses them)
-if 'requirement_agent' not in st.session_state:
-    st.session_state.requirement_agent = RequirementAgent()
-if 'verification_agent' not in st.session_state:
-    st.session_state.verification_agent = VerificationAgent()
-if 'automation_agent' not in st.session_state:
-    st.session_state.automation_agent = AutomationScriptAgent()
+def read_upload(uploaded_file) -> str:
+    data = uploaded_file.read()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")
 
-# ----------------------------
-# Sidebar for LLM Configuration
-# ----------------------------
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    # LLM Provider Selection
-    provider = st.selectbox(
-        "Select LLM Provider",
-        options=["Groq", "Azure OpenAI"],
-        index=0 if st.session_state.llm_provider == "Groq" else 1,
-        key="provider_selector"
+
+def unified_diff(current: str, proposed: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            current.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile="Current Version",
+            tofile="Proposed Version",
+            lineterm="",
+        )
     )
-    st.session_state.llm_provider = provider
-    
-    # Provider-specific inputs
-    api_key_to_use = None
-    azure_params = {}
-    
-    if provider == "Groq":
-        # For Streamlit Cloud: API key must be entered manually
-        if IS_STREAMLIT_CLOUD:
-            help_text = "Enter your GROQ API key. Required for Streamlit Cloud deployment."
-        else:
-            help_text = "Enter your GROQ API key. Optional if set in .env file (local development only)."
-        
-        api_key_input = st.text_input(
-            "GROQ API Key",
-            type="password",
-            help=help_text,
-            placeholder="gsk_...",
-            value=st.session_state.user_api_key if st.session_state.llm_provider == "Groq" else ""
-        )
-        
-        # Logic for Groq API Key
-        if api_key_input and api_key_input.strip():
-            api_key_to_use = api_key_input.strip()
-            st.session_state.user_api_key = api_key_to_use
-            st.success("✅ Using provided Groq key")
-        elif not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY", "").strip():
-            api_key_to_use = os.getenv("GROQ_API_KEY").strip()
-            st.info("ℹ️ Using Groq key from .env")
-        else:
-            st.warning("⚠️ No Groq API key configured.")
-            
-    else:  # Azure OpenAI
-        azure_api_key = st.text_input(
-            "Azure OpenAI API Key",
-            type="password",
-            value=st.session_state.user_api_key if st.session_state.llm_provider == "Azure OpenAI" else ""
-        )
-        azure_endpoint = st.text_input(
-            "Azure Endpoint",
-            placeholder="https://your-resource.openai.azure.com/",
-            value=st.session_state.azure_endpoint
-        )
-        azure_deployment = st.text_input(
-            "Deployment Name",
-            placeholder="e.g., gpt-4-turbo",
-            value=st.session_state.azure_deployment
-        )
-        azure_api_version = st.text_input(
-            "API Version",
-            value=st.session_state.azure_api_version
-        )
-        
-        # Update session state
-        st.session_state.user_api_key = azure_api_key
-        st.session_state.azure_endpoint = azure_endpoint
-        st.session_state.azure_deployment = azure_deployment
-        st.session_state.azure_api_version = azure_api_version
-        
-        if azure_api_key and azure_endpoint and azure_deployment:
-            api_key_to_use = azure_api_key.strip()
-            azure_params = {
-                "endpoint": azure_endpoint.strip(),
-                "deployment_name": azure_deployment.strip(),
-                "api_version": azure_api_version.strip()
-            }
-            st.success("✅ Azure configuration provided")
-        elif not IS_STREAMLIT_CLOUD and all([os.getenv("AZURE_OPENAI_API_KEY"), os.getenv("AZURE_OPENAI_ENDPOINT"), os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")]):
-            api_key_to_use = os.getenv("AZURE_OPENAI_API_KEY").strip()
-            azure_params = {
-                "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT").strip(),
-                "deployment_name": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME").strip(),
-                "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01").strip()
-            }
-            st.info("ℹ️ Using Azure config from .env")
-        else:
-            st.warning("⚠️ Azure OpenAI configuration incomplete.")
 
-    # Privacy and Key Information
-    st.info("""
-    🔒 **Privacy & Security**
-    
-    - We **don't store or log** any keys, conversations, or prompts
-    - All processing happens in your browser session
-    """)
-    
-    # Initialize LLM with the selected configuration
-    if api_key_to_use or (provider == "Groq" and not IS_STREAMLIT_CLOUD and os.getenv("GROQ_API_KEY")):
-        from utils.llm_config import get_llm
-        try:
-            if provider == "Groq":
-                new_llm = get_llm(provider="groq", api_key=api_key_to_use)
-            else:
-                new_llm = get_llm(
-                    provider="azure", 
-                    api_key=api_key_to_use,
-                    endpoint=azure_params.get("endpoint"),
-                    deployment_name=azure_params.get("deployment_name"),
-                    api_version=azure_params.get("api_version")
-                )
-            
-            # Update all agents with new LLM
-            st.session_state.requirement_agent.update_llm(new_llm)
-            st.session_state.verification_agent.update_llm(new_llm)
-            st.session_state.automation_agent.update_llm(new_llm)
-            st.session_state.api_key_valid = True
-        except Exception as e:
-            st.error(f"❌ Initialization error: {str(e)}")
-            st.session_state.api_key_valid = False
-    else:
-        st.session_state.api_key_valid = False
-    
-    # Version information at bottom of sidebar
-    st.divider()
-    
-    # Test Type Selection in Sidebar
-    st.subheader("🎯 Test Type")
-    test_type = st.radio(
-        "Choose the type of test automation:",
-        options=["API", "UI"],
-        index=0 if st.session_state.test_type == "API" else 1,
-        horizontal=True,
-        help="API: REST API testing with RestAssured | UI: Web UI testing with Selenium WebDriver",
-        key="sidebar_test_type"
-    )
-    st.session_state.test_type = test_type
 
-    # Show appropriate info based on selection
-    if test_type == "API":
-        st.info("📡 **API Testing Mode**\nRestAssured, Cucumber, TestNG")
-    else:
-        st.info("🌐 **UI Testing Mode**\nSelenium WebDriver, Cucumber, TestNG")
+def text_or_upload(label, upload_label, file_types, default, height, placeholder, key, language):
+    """Paste-or-upload input. Returns the text (possibly empty)."""
+    method = st.radio(label, ["Paste Content", "Upload File"], horizontal=True, key=f"{key}_method")
+    if method == "Paste Content":
+        return st.text_area(upload_label, value=default, height=height, placeholder=placeholder, key=f"{key}_text")
 
-    st.divider()
+    uploaded = st.file_uploader(upload_label, type=file_types, key=f"{key}_file")
+    if uploaded is None:
+        return default
+    try:
+        text = read_upload(uploaded)
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        return ""
+    st.success(f"Loaded file: {uploaded.name}")
+    with st.expander("Preview", expanded=False), st.container(height=300):
+        st.code(text, language=language)
+    return text
 
-    # Workflow Selection in Sidebar
-    st.subheader("🔀 Workflow")
-    workflow_type = st.radio(
-        "What would you like to generate?",
-        options=["Feature File", "Scripts Only"],
-        index=0 if st.session_state.workflow_type == "Feature File" else 1,
-        horizontal=True,
-        help="Feature File: Generate feature file from requirements first, then scripts | Scripts Only: Generate scripts from an existing feature file",
-        key="sidebar_workflow"
-    )
-    st.session_state.workflow_type = workflow_type
-    
-    st.divider()
-    st.caption("🔧 **Version 2.1.0** | Jan 2026")
 
-# =============================================
-# WORKFLOW 1: Feature File Generation (Default)
-# =============================================
-if workflow_type == "Feature File":
-    st.info("📝 **Provide requirements** to generate a feature file. You can paste text or upload a requirements file.")
-    
-    # Option to upload or paste requirements
-    req_input_method = st.radio(
-        "How would you like to provide the requirements?",
-        options=["Paste Content", "Upload File"],
-        horizontal=True,
-        key="req_input_method"
-    )
-    
-    if req_input_method == "Paste Content":
-        input_requirement = st.text_area(
-            "Enter Requirements File/Text/User Input",
-            value=st.session_state.input_requirement,
-            height=250,
-            placeholder="Paste raw requirements here..."
-        )
-    else:  # Upload File
-        req_uploaded_file = st.file_uploader(
-            "Upload a requirements file",
-            type=["txt", "md", "doc", "docx"],
-            help="Upload a text file containing your requirements",
-            key="req_file_uploader"
-        )
-        if req_uploaded_file is not None:
-            try:
-                # Try to read the file
-                file_content = req_uploaded_file.read()
-                
-                # Try to decode as UTF-8
-                try:
-                    input_requirement = file_content.decode("utf-8")
-                except UnicodeDecodeError:
-                    # Try other encodings
-                    try:
-                        input_requirement = file_content.decode("latin-1")
-                    except:
-                        st.error("❌ **Error**: Unable to read the file. The file encoding is not supported. Please try a UTF-8 encoded text file.")
-                        input_requirement = ""
-                
-                if input_requirement:
-                    st.success(f"✅ Loaded file: {req_uploaded_file.name}")
-                    # Show preview
-                    with st.expander("📄 Preview uploaded requirements", expanded=False):
-                        with st.container(height=300):
-                            st.text(input_requirement)
-            except Exception as e:
-                st.error(f"❌ **Error reading file**: {str(e)}. Please upload a valid text file.")
-                input_requirement = ""
-        else:
-            input_requirement = st.session_state.input_requirement
-
-    st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
-
-    generate_btn = st.button("Generate Feature File & Verification")
-
-# =============================================
-# WORKFLOW 2: Direct Script Generation
-# =============================================
-else:  # Scripts Only
-    st.info("📝 **Provide an existing feature file** to directly generate automation scripts. You can paste the content or upload a `.feature` file.")
-    
-    # Option to upload or paste
-    input_method = st.radio(
-        "How would you like to provide the feature file?",
-        options=["Paste Content", "Upload File"],
-        horizontal=True
-    )
-    
-    if input_method == "Paste Content":
-        direct_feature_input = st.text_area(
-            "Paste your Feature File content:",
-            value=st.session_state.direct_feature_file,
-            height=300,
-            placeholder="Feature: Your feature name\n\n  Scenario: Your scenario\n    Given ...\n    When ...\n    Then ..."
-        )
-    else:  # Upload File
-        uploaded_file = st.file_uploader(
-            "Upload a .feature file",
-            type=["feature", "txt"],
-            help="Upload a Gherkin feature file (.feature or .txt)"
-        )
-        if uploaded_file is not None:
-            try:
-                # Try to read the file
-                file_content = uploaded_file.read()
-                
-                # Try to decode as UTF-8
-                try:
-                    direct_feature_input = file_content.decode("utf-8")
-                except UnicodeDecodeError:
-                    # Try other encodings
-                    try:
-                        direct_feature_input = file_content.decode("latin-1")
-                    except:
-                        st.error("❌ **Error**: Unable to read the file. The file encoding is not supported. Please try a UTF-8 encoded text file.")
-                        direct_feature_input = ""
-                
-                # Validate it looks like a feature file
-                if direct_feature_input and not any(keyword in direct_feature_input.lower() for keyword in ["feature:", "scenario:", "given", "when", "then"]):
-                    st.warning("⚠️ **Warning**: This file doesn't appear to be a valid Gherkin feature file. It should contain keywords like 'Feature:', 'Scenario:', 'Given', 'When', 'Then'.")
-                
-                if direct_feature_input:
-                    st.success(f"✅ Loaded file: {uploaded_file.name}")
-                    # Show preview
-                    with st.expander("📄 Preview uploaded feature file", expanded=False):
-                        with st.container(height=300):
-                            st.code(direct_feature_input, language="gherkin")
-            except Exception as e:
-                st.error(f"❌ **Error reading file**: {str(e)}. Please upload a valid feature file.")
-                direct_feature_input = ""
-        else:
-            direct_feature_input = st.session_state.direct_feature_file
-    
-    st.warning("⚠️ **Disclaimer**: AI can make mistakes. Please validate and review all generated outputs before use.")
-    
-    generate_scripts_btn = st.button("🚀 Generate Scripts from Feature File", type="primary")
-    
-    # Handle direct script generation
-    if generate_scripts_btn:
-        # Check if API key is valid
-        if not st.session_state.get('api_key_valid', False):
-            st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
-            st.stop()
-        
-        if not direct_feature_input.strip():
-            st.warning("Please provide a feature file before generating scripts.")
-        else:
-            # Check if LLM is initialized
-            if st.session_state.automation_agent.llm is None:
-                st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
-                st.stop()
-            
-            # Reset script-related state
-            st.session_state.java_files = []
-            st.session_state.merged_java_file = None
-            st.session_state.user_script_input = ""
-            st.session_state.show_script_feedback_section = False
-            st.session_state.script_diff_outputs = []
-            st.session_state.feedback_counter = 0
-            st.session_state.refactoring_intents = []
-            st.session_state.merged_java_history = []
-            
-            # Store the feature file - convert Gherkin to JSON
-            from utils.gherkin_json_utils import gherkin_to_json
-            direct_feature_json = gherkin_to_json(direct_feature_input)
-            
-            st.session_state.direct_feature_file = direct_feature_input
-            st.session_state.feature_files = [direct_feature_json]
-            st.session_state.verification_outputs = ["(Direct script generation - no verification)"]
-            
-            # Go directly to script generation
-            st.session_state.show_scripts_section = True
-            st.session_state.show_feedback_section = False
-            st.session_state.show_final_edit_section = False
-            
+def version_nav(index_key: str, total: int, prefix: str):
+    idx = st.session_state[index_key]
+    left, mid, right = st.columns([1, 2, 1])
+    with left:
+        if st.button("◀ Previous", disabled=idx == 0, use_container_width=True, key=f"{prefix}_prev"):
+            st.session_state[index_key] -= 1
             st.rerun()
-    
-    # Set these to avoid errors in the rest of the code
-    input_requirement = ""
-    generate_btn = False
+    with mid:
+        st.markdown(f"<div style='text-align:center'><b>Version {idx + 1} of {total}</b></div>", unsafe_allow_html=True)
+    with right:
+        if st.button("Next ▶", disabled=idx == total - 1, use_container_width=True, key=f"{prefix}_next"):
+            st.session_state[index_key] += 1
+            st.rerun()
 
-# Stage 1: Generate Feature File and Verification Output (only for Feature File workflow)
-if workflow_type == "Feature File" and generate_btn:
-    # Check if API key is valid
-    if not st.session_state.get('api_key_valid', False):
-        st.error("❌ Please configure a valid GROQ API key in the sidebar before generating!")
+
+def require_llm():
+    if not st.session_state.api_key_valid:
+        st.error("Configure an LLM provider in the sidebar first.")
         st.stop()
-    
-    if not input_requirement.strip():
-        st.warning("Please enter some text before generating.")
-    else:
-        # Check if LLM is initialized
-        if not st.session_state.api_key_valid:
-            st.error("❌ LLM not initialized. Please provide a GROQ API key in the sidebar.")
-            st.stop()
-        
-        # Always reset everything for fresh start when Generate button is clicked
-        st.session_state.feature_files = []
-        st.session_state.verification_outputs = []
-        st.session_state.show_feedback_section = False
-        st.session_state.show_final_edit_section = False
-        st.session_state.show_scripts_section = False
-        st.session_state.java_files = []
-        st.session_state.merged_java_file = None
-        st.session_state.final_feature_file = None
-        st.session_state.user_script_input = ""
-        st.session_state.show_script_feedback_section = False
-        st.session_state.script_diff_outputs = []
-        st.session_state.feedback_counter = 0
-        st.session_state.refactoring_intents = []
-        st.session_state.merged_java_history = []
-        
-        st.session_state.input_requirement = input_requirement
-        
-        # Generate based on test type using agents
-        if st.session_state.test_type == "API":
-            with st.spinner("Generating API Feature File ..."):
-                feature_json = st.session_state.requirement_agent.generate_api_feature_file(input_requirement)
-                st.session_state.feature_files.append(feature_json)
-        else:  # UI
-            with st.spinner("Generating UI Feature File ..."):
-                feature_json = st.session_state.requirement_agent.generate_ui_feature_file(input_requirement)
-                st.session_state.feature_files.append(feature_json)
-        
-        with st.spinner("Generating Verification Agent Output ..."):
-            verification_output = st.session_state.verification_agent.verify_feature_file(
-                input_requirement,
-                st.session_state.feature_files[-1]
-            )
-            st.session_state.verification_outputs.append(verification_output)
-        
-        st.session_state.show_feedback_section = False
-        st.session_state.show_final_edit_section = False
-        st.session_state.show_scripts_section = False
-        # Reset chat state for new generation
-        st.session_state.chat_messages = []
-        st.session_state.proposed_feature_json = None
-        st.session_state.proposed_explanation = ""
-        st.session_state.current_feature_version_index = 0
-        st.session_state.show_chat_refinement = True
-        st.session_state.awaiting_confirmation = False
-        st.rerun()
 
-# =============================================
-# Feature File Display with Chat Refinement
-# =============================================
-if st.session_state.feature_files and st.session_state.verification_outputs and not st.session_state.show_scripts_section:
-    
-    st.divider()
-    
-    # Create two-column layout: Main content (feature file) | Chat sidebar
-    main_col, chat_col = st.columns([2, 1])
-    
-    with main_col:
-        # Version navigation header
-        total_versions = len(st.session_state.feature_files)
-        
-        # Ensure index is valid
-        if st.session_state.current_feature_version_index >= total_versions:
-            st.session_state.current_feature_version_index = total_versions - 1
-        if st.session_state.current_feature_version_index < 0:
-            st.session_state.current_feature_version_index = 0
-        
-        current_idx = st.session_state.current_feature_version_index
-        
-        # Version navigation with arrows
-        st.subheader("📋 Generated Feature File")
-        
-        nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-        
-        with nav_col1:
-            if st.button("◀ Previous", disabled=(current_idx == 0), use_container_width=True, key="prev_version"):
-                st.session_state.current_feature_version_index -= 1
-                st.rerun()
-        
-        with nav_col2:
-            st.markdown(f"<h4 style='text-align: center;'>Version {current_idx + 1} of {total_versions}</h4>", unsafe_allow_html=True)
-        
-        with nav_col3:
-            if st.button("Next ▶", disabled=(current_idx == total_versions - 1), use_container_width=True, key="next_version"):
-                st.session_state.current_feature_version_index += 1
-                st.rerun()
-        
-        # Display current version feature file
-        current_feature_json = st.session_state.feature_files[current_idx]
-        feature_file_text = json_to_gherkin(current_feature_json)
-        
-        with st.container(height=600):
-            st.code(feature_file_text, language="gherkin")
-        
-        # Verification Output section with toggle
-        st.divider()
-        
-        verification_col1, verification_col2 = st.columns([3, 1])
-        with verification_col1:
-            st.subheader("✅ Verification Agent Output")
-        with verification_col2:
-            include_verification = st.checkbox(
-                "Include in chat",
-                value=st.session_state.include_verification_in_chat,
-                key="include_verification_checkbox",
-                help="Check this to include verification feedback in your chat messages"
-            )
-            st.session_state.include_verification_in_chat = include_verification
-        
-        current_verification = st.session_state.verification_outputs[current_idx]
-        with st.expander("View Verification Output", expanded=False):
-            with st.container(height=200):
-                st.text(current_verification)
-        
-        # Action buttons
-        st.divider()
-        
-        action_col1, action_col2 = st.columns(2)
-        with action_col1:
-            if st.button("✅ Accept & Proceed to Scripts", use_container_width=True, type="primary"):
-                st.session_state.show_final_edit_section = True
-                st.session_state.show_chat_refinement = False
-                st.rerun()
-        with action_col2:
-            # Download current version
-            st.download_button(
-                label="📥 Download Feature File",
-                data=feature_file_text,
-                file_name=f"feature_v{current_idx + 1}.feature",
-                mime="text/plain",
-                use_container_width=True
-            )
-    
-    # Chat sidebar - fixed height container with scrollable messages
-    with chat_col:
-        st.subheader("💬 Refine with Chat")
-        
-        # Fixed-height scrollable chat container
-        chat_container = st.container(height=600)
-        with chat_container:
-            if not st.session_state.chat_messages:
-                st.info("👋 Start a conversation! Ask questions or describe changes you'd like to make.")
-            
-            # Display chat messages using st.chat_message for nice styling
-            for msg in st.session_state.chat_messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-        
-        # Show proposed changes if awaiting confirmation (outside the scrollable area)
-        if st.session_state.awaiting_confirmation and st.session_state.proposed_feature_json:
-            st.warning("📝 **Proposed Changes Ready - Review and Apply?**")
-            
-            with st.expander("View Proposed Changes (Diff)", expanded=True):
-                proposed_text = json_to_gherkin(st.session_state.proposed_feature_json)
-                
-                # Get current feature text for diff
-                if st.session_state.feature_files:
-                    current_feature_json = st.session_state.feature_files[st.session_state.current_feature_version_index]
-                    current_text = json_to_gherkin(current_feature_json)
-                else:
-                    current_text = ""
-                
-                # Generate unified diff
-                current_lines = current_text.splitlines(keepends=True)
-                proposed_lines = proposed_text.splitlines(keepends=True)
-                
-                diff_lines = list(difflib.unified_diff(
-                    current_lines,
-                    proposed_lines,
-                    fromfile='Current Version',
-                    tofile='Proposed Version',
-                    lineterm=''
-                ))
-                
-                if diff_lines:
-                    # Display diff with syntax highlighting
-                    diff_text = ''.join(diff_lines)
-                    st.code(diff_text, language="diff")
-                else:
-                    st.info("No differences detected between current and proposed versions.")
-                    st.code(proposed_text, language="gherkin")
-            
-            confirm_col1, confirm_col2 = st.columns(2)
-            with confirm_col1:
-                if st.button("✅ Apply", use_container_width=True, type="primary", key="apply_changes"):
-                    # Apply the proposed changes
-                    st.session_state.feature_files.append(st.session_state.proposed_feature_json)
-                    
-                    # Generate new verification output
-                    with st.spinner("Generating verification..."):
-                        new_verification = st.session_state.verification_agent.verify_feature_file(
-                            st.session_state.input_requirement,
-                            st.session_state.proposed_feature_json
-                        )
-                    st.session_state.verification_outputs.append(new_verification)
-                    
-                    # Update version index to latest
-                    st.session_state.current_feature_version_index = len(st.session_state.feature_files) - 1
-                    
-                    # Add confirmation to chat
-                    st.session_state.chat_messages.append({
-                        "role": "assistant",
-                        "content": "✅ Changes applied! The feature file has been updated to a new version."
-                    })
-                    
-                    # Reset proposal state
-                    st.session_state.proposed_feature_json = None
-                    st.session_state.proposed_explanation = ""
-                    st.session_state.awaiting_confirmation = False
-                    
-                    st.rerun()
-            
-            with confirm_col2:
-                if st.button("❌ Reject", use_container_width=True, key="reject_changes"):
-                    # Add rejection to chat
-                    st.session_state.chat_messages.append({
-                        "role": "assistant",
-                        "content": "❌ Changes rejected. Feel free to provide more feedback."
-                    })
-                    
-                    # Reset proposal state
-                    st.session_state.proposed_feature_json = None
-                    st.session_state.proposed_explanation = ""
-                    st.session_state.awaiting_confirmation = False
-                    
-                    st.rerun()
-        
-        # Chat input - using form for Enter key submission (fixed at bottom of sidebar)
-        with st.form(key=f"chat_form_{st.session_state.feedback_counter}", clear_on_submit=True):
-            user_input = st.text_input(
-                "Message:",
-                placeholder="Ask a question or describe changes...",
-                key=f"chat_input_{st.session_state.feedback_counter}",
-                label_visibility="collapsed"
-            )
-            col_send, col_clear = st.columns([3, 1])
-            with col_send:
-                submitted = st.form_submit_button("📤 Send", use_container_width=True)
-            with col_clear:
-                # Clear button inside form doesn't work well, we'll handle outside
-                pass
-        
-        # Handle form submission
-        if submitted and user_input and user_input.strip():
-            # Add user message to chat
-            st.session_state.chat_messages.append({
-                "role": "user",
-                "content": user_input.strip()
-            })
-            
-            # Get current feature file (latest version)
-            latest_feature_json = st.session_state.feature_files[-1]
-            
-            # Prepare verification output if checkbox is checked
-            verification_for_chat = ""
-            if st.session_state.include_verification_in_chat:
-                verification_for_chat = st.session_state.verification_outputs[-1]
-            
-            # Call the chat refinement method
-            with st.spinner("🤔 Thinking..."):
-                try:
-                    if st.session_state.test_type == "API":
-                        intent, explanation, proposed_json = st.session_state.requirement_agent.chat_refine_api_feature_file(
-                            current_feature_json=latest_feature_json,
-                            chat_messages=st.session_state.chat_messages[:-1],
-                            user_message=user_input.strip(),
-                            verification_output=verification_for_chat
-                        )
-                    else:  # UI
-                        intent, explanation, proposed_json = st.session_state.requirement_agent.chat_refine_ui_feature_file(
-                            current_feature_json=latest_feature_json,
-                            chat_messages=st.session_state.chat_messages[:-1],
-                            user_message=user_input.strip(),
-                            verification_output=verification_for_chat
-                        )
-                    
-                    # Add assistant response to chat
-                    st.session_state.chat_messages.append({
-                        "role": "assistant",
-                        "content": explanation
-                    })
-                    
-                    # Only show Apply/Reject if it's a change or regenerate request with valid proposed feature
-                    if (intent == "change" or intent == "regenerate") and proposed_json is not None:
-                        st.session_state.proposed_feature_json = proposed_json
-                        st.session_state.proposed_explanation = explanation
-                        st.session_state.awaiting_confirmation = True
-                    else:
-                        # It's a question - no confirmation needed
-                        st.session_state.proposed_feature_json = None
-                        st.session_state.awaiting_confirmation = False
-                    
-                    st.session_state.feedback_counter += 1
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-                    st.session_state.chat_messages.append({
-                        "role": "assistant",
-                        "content": f"Sorry, I encountered an error: {str(e)}"
-                    })
-            
-            st.rerun()
-        
-        # Clear chat button (outside form)
-        if st.session_state.chat_messages:
-            if st.button("🗑️ Clear Chat", use_container_width=True, key="clear_chat"):
-                st.session_state.chat_messages = []
-                st.session_state.proposed_feature_json = None
-                st.session_state.proposed_explanation = ""
-                st.session_state.awaiting_confirmation = False
-                st.session_state.feedback_counter += 1
-                st.rerun()
 
-# Show Final Edit Section before script generation
-if st.session_state.show_final_edit_section and not st.session_state.show_scripts_section:
-    st.divider()
-    st.subheader("📝 Final Review & Edit (Optional)")
-    
-    st.info("💡 **Last chance to edit!** You can manually modify the feature file below, or proceed directly to script generation.")
-    
-    # Get the latest feature file (JSON)
-    latest_feature_json = st.session_state.feature_files[-1]
-    
-    # Convert to Gherkin for editing
-    latest_feature_text = json_to_gherkin(latest_feature_json)
-    
-    # Editable feature file
-    edited_feature_file = st.text_area(
-        "Edit Feature File (optional):",
-        value=latest_feature_text,
-        height=400,
-        key="final_edit_feature_file",
-        help="Make any final manual edits to the feature file before generating scripts"
-    )
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        save_and_proceed_btn = st.button("💾 Save Edits & Generate Scripts", use_container_width=True)
-    
-    with col2:
-        proceed_without_edit_btn = st.button("⏭️ Skip Edit & Generate Scripts", use_container_width=True)
-    
-    if save_and_proceed_btn:
-        # Save the edited version as a new version
-        if edited_feature_file != latest_feature_text:
-            # Convert edited Gherkin back to JSON
-            from utils.gherkin_json_utils import gherkin_to_json
-            edited_feature_json = gherkin_to_json(edited_feature_file)
-            st.session_state.feature_files.append(edited_feature_json)
-            st.session_state.verification_outputs.append("(Manually edited by user)")
-            st.success("✅ Edits saved!")
-        
-        st.session_state.show_scripts_section = True
-        st.session_state.show_final_edit_section = False
-        st.rerun()
-    
-    if proceed_without_edit_btn:
-        st.session_state.show_scripts_section = True
-        st.session_state.show_final_edit_section = False
-        st.rerun()
-
-# Show Scripts Section if user accepted
-if st.session_state.show_scripts_section:
-    st.divider()
-    st.subheader("🤖 Automation Scripts Generation")
-    
-    # === PERSISTENCE: Show Feature File and Chat History ===
-    with st.expander("📋 Feature File & Chat History (from refinement)", expanded=False):
-        persist_col1, persist_col2 = st.columns([2, 1])
-        
-        with persist_col1:
-            st.markdown("**📄 Final Feature File:**")
-            # Show version info
-            version_count = len(st.session_state.feature_files)
-            st.caption(f"Version {version_count} of {version_count} (Final)")
-            
-            # Display the feature file
-            latest_feature_json = st.session_state.feature_files[-1]
-            feature_text = json_to_gherkin(latest_feature_json)
-            with st.container(height=600):
-                st.code(feature_text, language="gherkin")
-        
-        with persist_col2:
-            st.markdown("**💬 Chat History:**")
-            if st.session_state.chat_messages:
-                with st.container(height=600):
-                    for msg in st.session_state.chat_messages:
-                        if msg["role"] == "user":
-                            st.markdown(f"**🧑 You:** {msg['content']}")
-                        else:
-                            st.markdown(f"**🤖 Assistant:** {msg['content']}")
-                        st.markdown("---")
-            else:
-                st.info("No chat refinements were made.")
-    
-    # Use the LATEST feature file (JSON) for script generation
-    latest_feature_json = st.session_state.feature_files[-1]
-    
-    # Only generate if not already generated
-    if not st.session_state.java_files:
-        # Add user input section BEFORE generating scripts
-        st.info("💡 **Optional**: Provide additional context to help generate better automation scripts")
-        
-        # Different placeholder text based on test type
-        if st.session_state.test_type == "API":
-            placeholder_text = ("Provide details like:\n"
-                               "- API endpoint patterns or naming conventions\n"
-                               "- Custom data models or utility classes to use\n"
-                               "- Specific validation rules or assertions needed\n"
-                               "- Custom headers, authentication methods, or payload structures\n"
-                               "- Performance or timeout requirements\n"
-                               "- Mock data patterns or test data details\n"
-                               "- Special handling for specific fields or response formats\n"
-                               "- Business logic constraints or domain-specific rules")
-        else:  # UI
-            placeholder_text = ("Provide details like:\n"
-                               "- Page URL patterns or routing conventions\n"
-                               "- Custom Page Object classes or locator strategies\n"
-                               "- Specific element selectors (CSS, XPath, ID patterns)\n"
-                               "- Custom wait strategies or timeout requirements\n"
-                               "- Browser configuration or driver setup details\n"
-                               "- Screenshot capture requirements\n"
-                               "- Custom assertion libraries or validation patterns\n"
-                               "- JavaScript execution requirements\n"
-                               "- Special handling for dynamic elements, iframes, or modals\n"
-                               "- Data-driven test data patterns")
-        
-        user_additional_input = st.text_area(
-            "Additional Context for Script Generation (Optional):",
-            value=st.session_state.user_script_input,
-            height=150,
-            placeholder=placeholder_text,
-            key="user_script_additional_input"
+def render_sidebar():
+    with st.sidebar:
+        st.header("Configuration")
+        provider = st.selectbox(
+            "LLM Provider",
+            ["Groq", "Azure OpenAI"],
+            index=0 if st.session_state.llm_provider == "Groq" else 1,
         )
-        
-        generate_scripts_btn = st.button("✨ Generate Automation Scripts", use_container_width=True, type="primary")
-        
-        if generate_scripts_btn:
-            st.session_state.user_script_input = user_additional_input
-            
-            # Count scenarios from JSON
-            num_scenarios = len(latest_feature_json.get("scenarios", []))
-            st.success(f"Found {num_scenarios} scenario(s)")
-            
-            # Generate scripts using JSON IR (deterministic approach)
-            if st.session_state.test_type == "API":
-                with st.spinner("Generating API Automation Scripts for each scenario..."):
-                    # Generate JSON IR first
-                    st.session_state.script_jsons = st.session_state.automation_agent.generate_api_scripts_json_per_scenario(
-                        latest_feature_json, 
-                        user_additional_input=user_additional_input
-                    )
-                    # Convert to Java for display
-                    st.session_state.java_files = [
-                        st.session_state.automation_agent.script_json_to_java(sj) 
-                        for sj in st.session_state.script_jsons
-                    ]
-                    st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
-            else:  # UI
-                with st.spinner("Generating UI Automation Scripts for each scenario..."):
-                    # Generate JSON IR first
-                    st.session_state.script_jsons = st.session_state.automation_agent.generate_ui_scripts_json_per_scenario(
-                        latest_feature_json, 
-                        user_additional_input=user_additional_input
-                    )
-                    # Convert to Java for display
-                    st.session_state.java_files = [
-                        st.session_state.automation_agent.script_json_to_java(sj) 
-                        for sj in st.session_state.script_jsons
-                    ]
-                    st.success(f"Generated {len(st.session_state.java_files)} Java file(s)")
-            
+        st.session_state.llm_provider = provider
+        llm_kwargs = configure_groq() if provider == "Groq" else configure_azure()
+
+        st.info("**Privacy**: keys, prompts and conversations are not stored or logged.")
+
+        if llm_kwargs:
+            try:
+                llm = get_llm(**llm_kwargs)
+                for agent in ("requirement_agent", "verification_agent", "automation_agent"):
+                    st.session_state[agent].update_llm(llm)
+                st.session_state.api_key_valid = True
+            except Exception as e:
+                st.error(f"Initialization error: {e}")
+                st.session_state.api_key_valid = False
+        else:
+            st.session_state.api_key_valid = False
+
+        st.divider()
+        st.subheader("Test Type")
+        st.session_state.test_type = st.radio(
+            "Type of test automation",
+            ["API", "UI"],
+            index=0 if st.session_state.test_type == "API" else 1,
+            horizontal=True,
+        )
+        if st.session_state.test_type == "API":
+            st.caption("REST Assured, Cucumber, TestNG")
+        else:
+            st.caption("Selenium WebDriver, Cucumber, TestNG")
+
+        st.divider()
+        st.subheader("Workflow")
+        st.session_state.workflow_type = st.radio(
+            "What to generate",
+            ["Feature File", "Scripts Only"],
+            index=0 if st.session_state.workflow_type == "Feature File" else 1,
+            horizontal=True,
+            help="Feature File: requirements → feature file → scripts. Scripts Only: start from an existing feature file.",
+        )
+
+
+def configure_groq():
+    env_key = "" if IS_STREAMLIT_CLOUD else os.getenv("GROQ_API_KEY", "").strip()
+    key = st.text_input(
+        "Groq API Key",
+        type="password",
+        placeholder="gsk_...",
+        value=st.session_state.user_api_key,
+        help="Get a free key at console.groq.com/keys" + ("" if IS_STREAMLIT_CLOUD else ". Optional if GROQ_API_KEY is set in .env."),
+    ).strip()
+    if key:
+        st.session_state.user_api_key = key
+        st.success("Using provided Groq key")
+        return {"provider": "groq", "api_key": key}
+    if env_key:
+        st.info("Using Groq key from .env")
+        return {"provider": "groq", "api_key": env_key}
+    st.warning("No Groq API key configured.")
+    return None
+
+
+def configure_azure():
+    s = st.session_state
+    s.user_api_key = st.text_input("Azure OpenAI API Key", type="password", value=s.user_api_key)
+    s.azure_endpoint = st.text_input("Endpoint", placeholder="https://your-resource.openai.azure.com/", value=s.azure_endpoint)
+    s.azure_deployment = st.text_input("Deployment Name", placeholder="e.g. gpt-4o", value=s.azure_deployment)
+    s.azure_api_version = st.text_input("API Version", value=s.azure_api_version)
+
+    if s.user_api_key and s.azure_endpoint and s.azure_deployment:
+        st.success("Azure configuration provided")
+        return {
+            "provider": "azure",
+            "api_key": s.user_api_key,
+            "endpoint": s.azure_endpoint,
+            "deployment_name": s.azure_deployment,
+            "api_version": s.azure_api_version,
+        }
+    env = {k: os.getenv(k) for k in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT_NAME")}
+    if not IS_STREAMLIT_CLOUD and all(env.values()):
+        st.info("Using Azure config from .env")
+        return {"provider": "azure"}
+    st.warning("Azure OpenAI configuration incomplete.")
+    return None
+
+
+def render_requirements_input():
+    st.info("**Provide requirements** to generate a feature file.")
+    requirement = text_or_upload(
+        "How would you like to provide the requirements?",
+        "Requirements",
+        ["txt", "md"],
+        st.session_state.input_requirement,
+        250,
+        "Paste raw requirements here...",
+        "req",
+        "text",
+    )
+    st.warning(DISCLAIMER)
+    if not st.button("Generate Feature File & Verification", type="primary"):
+        return
+
+    require_llm()
+    if not requirement.strip():
+        st.warning("Enter some requirements first.")
+        return
+
+    reset_state(FEATURE_STATE, SCRIPT_STATE)
+    st.session_state.input_requirement = requirement
+    agent = st.session_state.requirement_agent
+    with st.spinner(f"Generating {st.session_state.test_type} feature file..."):
+        if st.session_state.test_type == "API":
+            feature_json = agent.generate_api_feature_file(requirement)
+        else:
+            feature_json = agent.generate_ui_feature_file(requirement)
+    with st.spinner("Verifying against requirements..."):
+        verification = st.session_state.verification_agent.verify_feature_file(requirement, feature_json)
+
+    st.session_state.feature_files = [feature_json]
+    st.session_state.verification_outputs = [verification]
+    st.rerun()
+
+
+def render_feature_file_input():
+    st.info("**Provide an existing feature file** to generate automation scripts directly.")
+    feature_text = text_or_upload(
+        "How would you like to provide the feature file?",
+        "Feature file",
+        ["feature", "txt"],
+        st.session_state.direct_feature_file,
+        300,
+        "Feature: Your feature name\n\n  Scenario: Your scenario\n    Given ...\n    When ...\n    Then ...",
+        "feature",
+        "gherkin",
+    )
+    if feature_text and not any(k in feature_text.lower() for k in ("feature:", "scenario:", "given", "when", "then")):
+        st.warning("This doesn't look like a Gherkin feature file (no Feature/Scenario/Given/When/Then).")
+    st.warning(DISCLAIMER)
+    if not st.button("Generate Scripts from Feature File", type="primary"):
+        return
+
+    require_llm()
+    if not feature_text.strip():
+        st.warning("Provide a feature file first.")
+        return
+
+    reset_state(FEATURE_STATE, SCRIPT_STATE)
+    st.session_state.direct_feature_file = feature_text
+    st.session_state.feature_files = [gherkin_to_json(feature_text)]
+    st.session_state.verification_outputs = ["(Direct script generation - no verification)"]
+    st.session_state.show_scripts_section = True
+    st.rerun()
+
+
+def render_feature_review():
+    s = st.session_state
+    st.divider()
+    main_col, chat_col = st.columns([2, 1])
+
+    with main_col:
+        total = len(s.feature_files)
+        s.current_feature_version_index = max(0, min(s.current_feature_version_index, total - 1))
+        idx = s.current_feature_version_index
+
+        st.subheader("Generated Feature File")
+        version_nav("current_feature_version_index", total, "feature")
+        feature_text = json_to_gherkin(s.feature_files[idx])
+        with st.container(height=600):
+            st.code(feature_text, language="gherkin")
+
+        st.divider()
+        title_col, check_col = st.columns([3, 1])
+        title_col.subheader("Verification Agent Output")
+        s.include_verification_in_chat = check_col.checkbox(
+            "Include in chat",
+            value=s.include_verification_in_chat,
+            help="Send the verification feedback along with your next chat message",
+        )
+        with st.expander("View Verification Output", expanded=False), st.container(height=200):
+            st.text(s.verification_outputs[idx])
+
+        st.divider()
+        accept_col, download_col = st.columns(2)
+        if accept_col.button("Accept & Proceed to Scripts", use_container_width=True, type="primary"):
+            s.show_final_edit_section = True
             st.rerun()
-    
-    # Display generated scripts if they exist
-    if st.session_state.java_files:
-        # Display individual Java files in collapsed expander
-        st.divider()
-        with st.expander("📄 Individual Generated Scripts (click to expand)", expanded=False):
-            for i, java_code in enumerate(st.session_state.java_files, 1):
-                st.markdown(f"**Scenario {i}:**")
-                with st.container(height=400):
-                    st.code(java_code, language="java")
-                st.divider()
-        
-        # Merge Java files first
-        st.divider()
-        st.subheader("🔗 Merged Java File with Chat Refinement")
-        st.info("💡 This is the final merged output. Use the chat to ask questions or request changes. (Using JSON IR for deterministic modifications)")
-        
-        # Only merge if not already merged
-        if not st.session_state.merged_java_file:
-            with st.spinner("Merging all scripts into single class..."):
-                # Use JSON IR merging if we have script_jsons
-                if st.session_state.script_jsons:
-                    st.session_state.merged_script_json = st.session_state.automation_agent.merge_script_jsons(
-                        st.session_state.script_jsons,
-                        merged_class_name="GeneratedTests"
-                    )
-                    st.session_state.merged_java_file = st.session_state.automation_agent.script_json_to_java(
-                        st.session_state.merged_script_json
-                    )
-                else:
-                    # Fallback to legacy string-based merging
-                    st.session_state.merged_java_file = st.session_state.automation_agent.merge_java_files(
-                        st.session_state.java_files,
-                        merged_class_name="GeneratedTests"
-                    )
-                    # Convert to JSON for future refinements
-                    st.session_state.merged_script_json = st.session_state.automation_agent.java_to_script_json(
-                        st.session_state.merged_java_file
-                    )
-                
-                # Initialize script versions with the first merged version
-                st.session_state.script_versions = [st.session_state.merged_java_file]
-                st.session_state.current_script_version_index = 0
-        
-        # Ensure script_versions is initialized
-        if not st.session_state.script_versions:
-            st.session_state.script_versions = [st.session_state.merged_java_file]
-            st.session_state.current_script_version_index = 0
-        
-        # === SPLIT VIEW: Script (left) + Chat (right) ===
-        script_col, script_chat_col = st.columns([2, 1])
-        
-        # Script display column
-        with script_col:
-            # Version navigation
-            num_script_versions = len(st.session_state.script_versions)
-            current_script_idx = st.session_state.current_script_version_index
-            
-            if num_script_versions > 1:
-                nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1])
-                with nav_col1:
-                    if st.button("◀", key="prev_script_version", disabled=(current_script_idx == 0)):
-                        st.session_state.current_script_version_index -= 1
-                        st.rerun()
-                with nav_col2:
-                    st.markdown(f"<div style='text-align: center;'>📄 Version {current_script_idx + 1} of {num_script_versions}</div>", unsafe_allow_html=True)
-                with nav_col3:
-                    if st.button("▶", key="next_script_version", disabled=(current_script_idx == num_script_versions - 1)):
-                        st.session_state.current_script_version_index += 1
-                        st.rerun()
+        download_col.download_button(
+            "Download Feature File",
+            data=feature_text,
+            file_name=f"feature_v{idx + 1}.feature",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+    with chat_col:
+        render_feature_chat()
+
+
+def render_feature_chat():
+    s = st.session_state
+    st.subheader("Refine with Chat")
+    with st.container(height=600):
+        if not s.chat_messages:
+            st.info("Ask questions or describe changes you'd like to make.")
+        for msg in s.chat_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    if s.awaiting_confirmation and s.proposed_feature_json:
+        st.warning("**Proposed changes ready. Review and apply?**")
+        proposed_text = json_to_gherkin(s.proposed_feature_json)
+        current_text = json_to_gherkin(s.feature_files[s.current_feature_version_index])
+        with st.expander("View Proposed Changes (Diff)", expanded=True):
+            diff = unified_diff(current_text, proposed_text)
+            if diff:
+                st.code(diff, language="diff")
             else:
-                st.caption("📄 Version 1 of 1 (Original)")
-            
-            # Display current script version
-            current_script = st.session_state.script_versions[current_script_idx]
-            with st.container(height=800):
-                st.code(current_script, language="java")
-            
-            # Download button for current version
-            st.download_button(
-                label="📥 Download This Version",
-                data=current_script,
-                file_name=f"GeneratedTests_v{current_script_idx + 1}.java",
-                mime="text/plain",
-                use_container_width=True
-            )
-        
-        # Chat column
-        with script_chat_col:
-            st.subheader("� Refine Script")
-            
-            # Fixed-height scrollable chat container
-            script_chat_container = st.container(height=800)
-            with script_chat_container:
-                if not st.session_state.script_chat_messages:
-                    st.info("👋 Ask questions about the script or describe changes you'd like to make.")
-                
-                # Display chat messages using st.chat_message for nice styling
-                for msg in st.session_state.script_chat_messages:
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
-            
-            # Show proposed changes if awaiting confirmation
-            if st.session_state.script_awaiting_confirmation and st.session_state.proposed_script:
-                st.warning("📝 **Proposed Changes Ready - Review and Apply?**")
-                
-                # Show LLM reasoning if available
-                if st.session_state.script_reasoning:
-                    with st.expander("🧠 LLM Reasoning (Thinking Process)", expanded=False):
-                        with st.container(height=200):
-                            st.markdown(st.session_state.script_reasoning)
-                
-                # Generate diff between current and proposed script
-                import difflib
-                current_script = st.session_state.script_versions[-1]
-                proposed_script = st.session_state.proposed_script
-                
-                # Create unified diff
-                current_lines = current_script.splitlines(keepends=True)
-                proposed_lines = proposed_script.splitlines(keepends=True)
-                diff_lines = list(difflib.unified_diff(
-                    current_lines, 
-                    proposed_lines,
-                    fromfile='Current Version',
-                    tofile='Proposed Version',
-                    lineterm=''
-                ))
-                
-                if diff_lines:
-                    diff_text = ''.join(diff_lines)
-                    with st.expander("📋 View Changes (Diff)", expanded=True):
-                        with st.container(height=300):
-                            st.code(diff_text, language="diff")
-                else:
-                    st.info("No visible changes detected.")
-                
-                # Option to view full proposed script
-                with st.expander("📄 View Full Proposed Script", expanded=False):
-                    with st.container(height=300):
-                        st.code(st.session_state.proposed_script, language="java")
-                
-                confirm_col1, confirm_col2 = st.columns(2)
-                with confirm_col1:
-                    if st.button("✅ Apply", use_container_width=True, type="primary", key="apply_script_changes"):
-                        # Apply the proposed changes - add to versions
-                        st.session_state.script_versions.append(st.session_state.proposed_script)
-                        st.session_state.merged_java_file = st.session_state.proposed_script
-                        
-                        # Update the merged_script_json if we have a proposed JSON
-                        if hasattr(st.session_state, 'proposed_script_json') and st.session_state.proposed_script_json:
-                            st.session_state.merged_script_json = st.session_state.proposed_script_json
-                            st.session_state.proposed_script_json = None
-                        
-                        # Update version index to latest
-                        st.session_state.current_script_version_index = len(st.session_state.script_versions) - 1
-                        
-                        # Add confirmation to chat
-                        st.session_state.script_chat_messages.append({
-                            "role": "assistant",
-                            "content": "✅ Changes applied! The script has been updated to a new version."
-                        })
-                        
-                        # Reset proposal state
-                        st.session_state.proposed_script = None
-                        st.session_state.script_proposed_explanation = ""
-                        st.session_state.script_awaiting_confirmation = False
-                        st.session_state.script_reasoning = ""  # Clear reasoning
-                        
-                        st.rerun()
-                
-                with confirm_col2:
-                    if st.button("❌ Reject", use_container_width=True, key="reject_script_changes"):
-                        # Add rejection to chat
-                        st.session_state.script_chat_messages.append({
-                            "role": "assistant",
-                            "content": "❌ Changes rejected. Feel free to provide more feedback."
-                        })
-                        
-                        # Reset proposal state
-                        st.session_state.proposed_script = None
-                        st.session_state.script_proposed_explanation = ""
-                        st.session_state.script_awaiting_confirmation = False
-                        st.session_state.script_reasoning = ""  # Clear reasoning
-                        
-                        st.rerun()
-            
-            # Chat input - using form for Enter key submission
-            with st.form(key=f"script_chat_form_{st.session_state.script_feedback_counter}", clear_on_submit=True):
-                script_user_input = st.text_input(
-                    "Message:",
-                    placeholder="Ask a question or describe changes...",
-                    key=f"script_chat_input_{st.session_state.script_feedback_counter}",
-                    label_visibility="collapsed"
+                st.info("No differences from the current version.")
+
+        apply_col, reject_col = st.columns(2)
+        if apply_col.button("Apply", use_container_width=True, type="primary", key="apply_feature"):
+            s.feature_files.append(s.proposed_feature_json)
+            with st.spinner("Verifying..."):
+                s.verification_outputs.append(
+                    s.verification_agent.verify_feature_file(s.input_requirement, s.proposed_feature_json)
                 )
-                script_submitted = st.form_submit_button("📤 Send", use_container_width=True)
-            
-            # Handle form submission
-            if script_submitted and script_user_input and script_user_input.strip():
-                # Add user message to chat
-                st.session_state.script_chat_messages.append({
-                    "role": "user",
-                    "content": script_user_input.strip()
-                })
-                
-                # Get current script (latest version)
-                latest_script = st.session_state.script_versions[-1]
-                
-                # Call the chat refinement method - use JSON IR for deterministic changes
-                with st.spinner("🤔 Thinking (deterministic JSON modifications)..."):
-                    try:
-                        # Use JSON IR-based refinement if we have merged_script_json
-                        if st.session_state.merged_script_json:                            
-                            # Write to file for debugging
-                            result = st.session_state.automation_agent.chat_refine_script_json(
-                                current_script_json=st.session_state.merged_script_json,
-                                chat_messages=st.session_state.script_chat_messages[:-1],
-                                user_message=script_user_input.strip()
-                            )                            
-                            intent, reasoning, explanation, proposed_json = result                            
-                            # Store reasoning for display
-                            st.session_state.script_reasoning = reasoning
-                            
-                            # Convert proposed JSON to Java if we have one
-                            proposed_script = None
-                            if proposed_json is not None:
-                                proposed_script = st.session_state.automation_agent.script_json_to_java(proposed_json)
-                                # Store the JSON for next iteration
-                                st.session_state.proposed_script_json = proposed_json
-                        else:
-                            # Fallback to legacy string-based refinement (no reasoning)
-                            intent, explanation, proposed_script = st.session_state.automation_agent.chat_refine_script(
-                                current_script=latest_script,
-                                chat_messages=st.session_state.script_chat_messages[:-1],
-                                user_message=script_user_input.strip()
-                            )
-                            st.session_state.script_reasoning = ""
-                        
-                        # Add assistant response to chat
-                        st.session_state.script_chat_messages.append({
-                            "role": "assistant",
-                            "content": explanation
-                        })
-                        
-                        # Only show Apply/Reject if it's a change or regenerate request with valid proposed script
-                        if (intent == "change" or intent == "regenerate") and proposed_script is not None:
-                            st.session_state.proposed_script = proposed_script
-                            st.session_state.script_proposed_explanation = explanation
-                            st.session_state.script_awaiting_confirmation = True
-                        else:
-                            # It's a question - no confirmation needed
-                            st.session_state.proposed_script = None
-                            st.session_state.script_awaiting_confirmation = False
-                        
-                        st.session_state.script_feedback_counter += 1
-                        
-                    except Exception as e:
-                        # Log full exception details to file
-                        st.error(f"❌ Error: {str(e)}")
-                        st.session_state.script_chat_messages.append({
-                            "role": "assistant",
-                            "content": f"Sorry, I encountered an error: {str(e)}"
-                        })
-                
-                st.rerun()
-            
-            # Clear chat button
-            if st.session_state.script_chat_messages:
-                if st.button("�️ Clear Chat", use_container_width=True, key="clear_script_chat"):
-                    st.session_state.script_chat_messages = []
-                    st.session_state.proposed_script = None
-                    st.session_state.script_proposed_explanation = ""
-                    st.session_state.script_awaiting_confirmation = False
-                    st.session_state.script_feedback_counter += 1
-                    st.rerun()
-        
-        # Download final merged file
-        st.divider()
-        final_col1, final_col2 = st.columns(2)
-        with final_col1:
-            st.download_button(
-                label="📥 Download Final Merged Java File",
-                data=st.session_state.script_versions[-1],
-                file_name="GeneratedTests.java",
-                mime="text/plain",
-                use_container_width=True
-            )
-        with final_col2:
-            if len(st.session_state.script_versions) > 1:
-                st.success(f"✅ Script refined {len(st.session_state.script_versions) - 1} time(s)")
-        
-        # Option to start over (always visible)
-        st.divider()
-        if st.button("🔄 Start Over"):
-            st.session_state.feature_files = []
-            st.session_state.verification_outputs = []
-            st.session_state.input_requirement = ""
-            st.session_state.show_feedback_section = False
-            st.session_state.show_final_edit_section = False
-            st.session_state.show_scripts_section = False
-            st.session_state.java_files = []
-            st.session_state.merged_java_file = None
-            st.session_state.final_feature_file = None
-            st.session_state.user_script_input = ""
-            st.session_state.show_script_feedback_section = False
-            st.session_state.script_diff_outputs = []
-            st.session_state.feedback_counter = 0
-            st.session_state.refactoring_intents = []
-            st.session_state.merged_java_history = []
-            st.session_state.direct_feature_file = ""  # Reset direct feature file
-            # Reset JSON IR state
-            st.session_state.script_jsons = []
-            st.session_state.merged_script_json = None
-            # Reset feature file chat-related state
-            st.session_state.chat_messages = []
-            st.session_state.proposed_feature_json = None
-            st.session_state.proposed_explanation = ""
-            st.session_state.current_feature_version_index = 0
-            st.session_state.include_verification_in_chat = False
-            st.session_state.show_chat_refinement = False
-            st.session_state.awaiting_confirmation = False
-            # Reset script chat-related state
-            st.session_state.script_chat_messages = []
-            st.session_state.proposed_script = None
-            st.session_state.script_proposed_explanation = ""
-            st.session_state.script_awaiting_confirmation = False
-            st.session_state.script_versions = []
-            st.session_state.current_script_version_index = 0
-            st.session_state.script_feedback_counter = 0
+            s.current_feature_version_index = len(s.feature_files) - 1
+            s.chat_messages.append({"role": "assistant", "content": "Changes applied as a new version."})
+            s.proposed_feature_json, s.awaiting_confirmation = None, False
             st.rerun()
+        if reject_col.button("Reject", use_container_width=True, key="reject_feature"):
+            s.chat_messages.append({"role": "assistant", "content": "Changes rejected."})
+            s.proposed_feature_json, s.awaiting_confirmation = None, False
+            st.rerun()
+
+    with st.form(key=f"chat_form_{s.feedback_counter}", clear_on_submit=True):
+        message = st.text_input("Message", placeholder="Ask a question or describe changes...", label_visibility="collapsed")
+        submitted = st.form_submit_button("Send", use_container_width=True)
+
+    if submitted and message.strip():
+        s.chat_messages.append({"role": "user", "content": message.strip()})
+        verification = s.verification_outputs[-1] if s.include_verification_in_chat else ""
+        refine = (
+            s.requirement_agent.chat_refine_api_feature_file
+            if s.test_type == "API"
+            else s.requirement_agent.chat_refine_ui_feature_file
+        )
+        with st.spinner("Thinking..."):
+            try:
+                intent, explanation, proposed = refine(
+                    current_feature_json=s.feature_files[-1],
+                    chat_messages=s.chat_messages[:-1],
+                    user_message=message.strip(),
+                    verification_output=verification,
+                )
+                s.chat_messages.append({"role": "assistant", "content": explanation})
+                has_change = intent in ("change", "regenerate") and proposed is not None
+                s.proposed_feature_json = proposed if has_change else None
+                s.awaiting_confirmation = has_change
+                s.feedback_counter += 1
+            except Exception as e:
+                st.error(f"Error: {e}")
+                s.chat_messages.append({"role": "assistant", "content": f"Sorry, I encountered an error: {e}"})
+        st.rerun()
+
+    if s.chat_messages and st.button("Clear Chat", use_container_width=True, key="clear_chat"):
+        s.chat_messages, s.proposed_feature_json, s.awaiting_confirmation = [], None, False
+        s.feedback_counter += 1
+        st.rerun()
+
+
+def render_final_edit():
+    s = st.session_state
+    st.divider()
+    st.subheader("Final Review & Edit (Optional)")
+    st.info("Edit the feature file manually, or proceed directly to script generation.")
+
+    latest_text = json_to_gherkin(s.feature_files[-1])
+    edited = st.text_area("Edit Feature File", value=latest_text, height=400, key="final_edit_feature_file")
+
+    save_col, skip_col = st.columns(2)
+    if save_col.button("Save Edits & Generate Scripts", use_container_width=True):
+        if edited != latest_text:
+            s.feature_files.append(gherkin_to_json(edited))
+            s.verification_outputs.append("(Manually edited by user)")
+        s.show_scripts_section, s.show_final_edit_section = True, False
+        st.rerun()
+    if skip_col.button("Skip Edit & Generate Scripts", use_container_width=True):
+        s.show_scripts_section, s.show_final_edit_section = True, False
+        st.rerun()
+
+
+def render_scripts():
+    s = st.session_state
+    st.divider()
+    st.subheader("Automation Scripts")
+
+    with st.expander("Feature File & Chat History", expanded=False):
+        feature_col, history_col = st.columns([2, 1])
+        with feature_col, st.container(height=600):
+            st.code(json_to_gherkin(s.feature_files[-1]), language="gherkin")
+        with history_col:
+            if not s.chat_messages:
+                st.info("No chat refinements were made.")
+            for msg in s.chat_messages:
+                who = "You" if msg["role"] == "user" else "Assistant"
+                st.markdown(f"**{who}:** {msg['content']}")
+
+    if not s.java_files:
+        render_script_generation()
+        return
+
+    st.divider()
+    with st.expander("Per-scenario scripts", expanded=False):
+        for i, java_code in enumerate(s.java_files, 1):
+            st.markdown(f"**Scenario {i}**")
+            with st.container(height=400):
+                st.code(java_code, language="java")
+
+    if not s.merged_java_file:
+        agent = s.automation_agent
+        if s.script_jsons:
+            s.merged_script_json = agent.merge_script_jsons(s.script_jsons)
+            s.merged_java_file = agent.script_json_to_java(s.merged_script_json)
+        else:
+            s.merged_java_file = agent.merge_java_files(s.java_files)
+            s.merged_script_json = agent.java_to_script_json(s.merged_java_file)
+        s.script_versions = [s.merged_java_file]
+        s.current_script_version_index = 0
+
+    st.divider()
+    st.subheader("Merged Java File")
+    script_col, chat_col = st.columns([2, 1])
+    with script_col:
+        idx = s.current_script_version_index
+        version_nav("current_script_version_index", len(s.script_versions), "script")
+        with st.container(height=800):
+            st.code(s.script_versions[idx], language="java")
+        st.download_button(
+            "Download This Version",
+            data=s.script_versions[idx],
+            file_name=f"GeneratedTests_v{idx + 1}.java",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    with chat_col:
+        render_script_chat()
+
+    st.divider()
+    st.download_button(
+        "Download Final Java File",
+        data=s.script_versions[-1],
+        file_name="GeneratedTests.java",
+        mime="text/plain",
+        type="primary",
+    )
+    if st.button("Start Over"):
+        reset_state(FEATURE_STATE, SCRIPT_STATE)
+        st.rerun()
+
+
+def render_script_generation():
+    s = st.session_state
+    st.info("**Optional**: extra context helps the generated scripts match your framework.")
+    context = st.text_area(
+        "Additional context for script generation",
+        value=s.user_script_input,
+        height=150,
+        placeholder=API_CONTEXT_HINT if s.test_type == "API" else UI_CONTEXT_HINT,
+    )
+    if not st.button("Generate Automation Scripts", use_container_width=True, type="primary"):
+        return
+
+    require_llm()
+    s.user_script_input = context
+    feature_json = s.feature_files[-1]
+    agent = s.automation_agent
+    count = len(feature_json.get("scenarios", []))
+    with st.spinner(f"Generating {s.test_type} scripts for {count} scenario(s)..."):
+        if s.test_type == "API":
+            s.script_jsons = agent.generate_api_scripts_json_per_scenario(feature_json, context)
+        else:
+            s.script_jsons = agent.generate_ui_scripts_json_per_scenario(feature_json, context)
+        s.java_files = [agent.script_json_to_java(sj) for sj in s.script_jsons]
+    st.rerun()
+
+
+def render_script_chat():
+    s = st.session_state
+    st.subheader("Refine Script")
+    with st.container(height=800):
+        if not s.script_chat_messages:
+            st.info("Ask questions about the script or describe changes you'd like to make.")
+        for msg in s.script_chat_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    if s.script_awaiting_confirmation and s.proposed_script:
+        st.warning("**Proposed changes ready. Review and apply?**")
+        if s.script_reasoning:
+            with st.expander("Model reasoning", expanded=False), st.container(height=200):
+                st.markdown(s.script_reasoning)
+        diff = unified_diff(s.script_versions[-1], s.proposed_script)
+        if diff:
+            with st.expander("View Changes (Diff)", expanded=True), st.container(height=300):
+                st.code(diff, language="diff")
+        else:
+            st.info("No visible changes.")
+        with st.expander("View Full Proposed Script", expanded=False), st.container(height=300):
+            st.code(s.proposed_script, language="java")
+
+        apply_col, reject_col = st.columns(2)
+        if apply_col.button("Apply", use_container_width=True, type="primary", key="apply_script"):
+            s.script_versions.append(s.proposed_script)
+            s.merged_java_file = s.proposed_script
+            if s.proposed_script_json:
+                s.merged_script_json = s.proposed_script_json
+            s.current_script_version_index = len(s.script_versions) - 1
+            s.script_chat_messages.append({"role": "assistant", "content": "Changes applied as a new version."})
+            clear_script_proposal()
+            st.rerun()
+        if reject_col.button("Reject", use_container_width=True, key="reject_script"):
+            s.script_chat_messages.append({"role": "assistant", "content": "Changes rejected."})
+            clear_script_proposal()
+            st.rerun()
+
+    with st.form(key=f"script_chat_form_{s.script_feedback_counter}", clear_on_submit=True):
+        message = st.text_input("Message", placeholder="Ask a question or describe changes...", label_visibility="collapsed")
+        submitted = st.form_submit_button("Send", use_container_width=True)
+
+    if submitted and message.strip():
+        s.script_chat_messages.append({"role": "user", "content": message.strip()})
+        history = s.script_chat_messages[:-1]
+        agent = s.automation_agent
+        with st.spinner("Thinking..."):
+            try:
+                proposed_script, s.proposed_script_json, s.script_reasoning = None, None, ""
+                if s.merged_script_json:
+                    intent, s.script_reasoning, explanation, proposed_json = agent.chat_refine_script_json(
+                        s.merged_script_json, history, message.strip()
+                    )
+                    if proposed_json is not None:
+                        proposed_script = agent.script_json_to_java(proposed_json)
+                        s.proposed_script_json = proposed_json
+                else:
+                    intent, explanation, proposed_script = agent.chat_refine_script(
+                        s.script_versions[-1], history, message.strip()
+                    )
+                s.script_chat_messages.append({"role": "assistant", "content": explanation})
+                has_change = intent in ("change", "regenerate") and proposed_script is not None
+                s.proposed_script = proposed_script if has_change else None
+                s.script_awaiting_confirmation = has_change
+                s.script_feedback_counter += 1
+            except Exception as e:
+                st.error(f"Error: {e}")
+                s.script_chat_messages.append({"role": "assistant", "content": f"Sorry, I encountered an error: {e}"})
+        st.rerun()
+
+    if s.script_chat_messages and st.button("Clear Chat", use_container_width=True, key="clear_script_chat"):
+        s.script_chat_messages = []
+        clear_script_proposal()
+        s.script_feedback_counter += 1
+        st.rerun()
+
+
+def clear_script_proposal():
+    s = st.session_state
+    s.proposed_script, s.proposed_script_json, s.script_reasoning = None, None, ""
+    s.script_awaiting_confirmation = False
+
+
+st.set_page_config(page_title="Requirements to Test Automation", layout="wide")
+st.title("Requirements to Test Automation")
+init_state()
+render_sidebar()
+
+if st.session_state.workflow_type == "Feature File":
+    render_requirements_input()
+else:
+    render_feature_file_input()
+
+if st.session_state.feature_files and not st.session_state.show_scripts_section:
+    render_feature_review()
+if st.session_state.show_final_edit_section and not st.session_state.show_scripts_section:
+    render_final_edit()
+if st.session_state.show_scripts_section:
+    render_scripts()

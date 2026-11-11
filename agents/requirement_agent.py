@@ -1,412 +1,93 @@
-"""
-Requirement Agent - Handles feature file generation and refinement.
-Converts requirements into structured Gherkin feature files.
-"""
+from typing import Dict, List, Optional, Tuple
 
-from typing import Dict, Optional, List, Tuple
-from langchain_groq import ChatGroq
-from utils.gherkin_json_utils import (
-    json_to_gherkin, 
-    gherkin_to_json, 
-    validate_gherkin_json, 
+from core.gherkin_json import (
     apply_feature_modifications,
+    has_scenario_id_gaps,
+    json_to_gherkin,
     renumber_scenario_ids,
-    has_scenario_id_gaps
+    validate_gherkin_json,
 )
-from llm_prompts.requirement_agent import (
-    SYSTEM_INSTRUCTION_REQ_AGENT, 
-    SYSTEM_INSTRUCTION_FEEDBACK_AGENT,
-    SYSTEM_INSTRUCTION_CHAT_REFINEMENT_AGENT
-)
-from llm_prompts.ui_requirement_agent import (
-    SYSTEM_INSTRUCTION_UI_REQ_AGENT, 
-    SYSTEM_INSTRUCTION_UI_FEEDBACK_AGENT,
-    SYSTEM_INSTRUCTION_UI_CHAT_REFINEMENT_AGENT
-)
+from prompts.requirement_agent import SYSTEM_INSTRUCTION_CHAT_REFINEMENT_AGENT, SYSTEM_INSTRUCTION_REQ_AGENT
+from prompts.ui_requirement_agent import SYSTEM_INSTRUCTION_UI_CHAT_REFINEMENT_AGENT, SYSTEM_INSTRUCTION_UI_REQ_AGENT
+
 from .base_agent import BaseAgent
 
 
 class RequirementAgent(BaseAgent):
-    """
-    Agent responsible for generating and refining feature files from requirements.
-    
-    Capabilities:
-    - Generate API feature files from requirements
-    - Generate UI feature files from requirements
-    - Refine feature files based on feedback
-    - Validate feature file JSON structures
-    """
-    
-    def __init__(self, llm: Optional[ChatGroq] = None):
-        """
-        Initialize the Requirement Agent.
-        
-        Args:
-            llm: Optional ChatGroq instance. If None, will use the global llm from utils.
-        """
-        super().__init__(llm)
-    
+    """Turns raw requirements into a Gherkin feature (as JSON) and refines it via chat."""
+
     def generate_api_feature_file(self, input_requirement: str) -> Dict:
-        """
-        Generate API feature file as JSON structure from requirements.
-        
-        Args:
-            input_requirement: Input requirements text describing API functionality
-        
-        Returns:
-            Dict: JSON structure representing the API feature file
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Execute the prompt
-        result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_REQ_AGENT,
-            variables={"INPUT_REQUIREMENTS": input_requirement}
-        )
-        
-        # Parse and validate JSON response
-        json_data = self._parse_json_response(result)
-        
-        # Validate the structure
-        is_valid, errors = validate_gherkin_json(json_data)
-        if not is_valid:
-            print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return json_data
-    
+        return self._generate(SYSTEM_INSTRUCTION_REQ_AGENT, input_requirement)
+
     def generate_ui_feature_file(self, input_requirement: str) -> Dict:
-        """
-        Generate UI feature file as JSON structure from requirements.
-        
-        Args:
-            input_requirement: Input requirements text describing UI functionality
-        
-        Returns:
-            Dict: JSON structure representing the UI feature file
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Execute the prompt
-        result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_UI_REQ_AGENT,
-            variables={"INPUT_REQUIREMENTS": input_requirement}
-        )
-        
-        # Parse and validate JSON response
-        json_data = self._parse_json_response(result)
-        
-        # Validate the structure
-        is_valid, errors = validate_gherkin_json(json_data)
-        if not is_valid:
-            print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return json_data
-    
-    def refine_api_feature_file(
-        self,
-        original_feature_json: Dict,
-        verification_feedback: str = "",
-        user_feedback: str = ""
-    ) -> Dict:
-        """
-        Refine an existing API feature file based on feedback.
-        
-        Args:
-            original_feature_json: Original feature file as JSON structure
-            verification_feedback: Feedback from verification agent
-            user_feedback: Direct user feedback
-        
-        Returns:
-            Dict: Refined JSON structure representing the updated feature file
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Convert JSON to Gherkin for context
-        original_feature_text = json_to_gherkin(original_feature_json)
-        
-        # Combine feedbacks
-        combined_feedback = ""
-        if verification_feedback:
-            combined_feedback += f"VERIFICATION FEEDBACK:\n{verification_feedback}\n\n"
-        if user_feedback:
-            combined_feedback += f"USER FEEDBACK:\n{user_feedback}"
-        
-        # Execute refinement prompt
-        result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_FEEDBACK_AGENT,
-            variables={
-                "ORIGINAL_FEATURE_JSON": json_to_gherkin(original_feature_json),
-                "COMBINED_FEEDBACK": combined_feedback.strip()
-            }
-        )
-        
-        # Parse and validate JSON response
-        json_data = self._parse_json_response(result, fallback=original_feature_json)
-        
-        # Validate the structure
-        is_valid, errors = validate_gherkin_json(json_data)
-        if not is_valid:
-            print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return json_data
-    
-    def refine_ui_feature_file(
-        self,
-        original_feature_json: Dict,
-        verification_feedback: str = "",
-        user_feedback: str = ""
-    ) -> Dict:
-        """
-        Refine an existing UI feature file based on feedback.
-        
-        Args:
-            original_feature_json: Original UI feature file as JSON structure
-            verification_feedback: Feedback from verification agent
-            user_feedback: Direct user feedback
-        
-        Returns:
-            Dict: Refined JSON structure representing the updated UI feature file
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Convert JSON to Gherkin for context
-        original_feature_text = json_to_gherkin(original_feature_json)
-        
-        # Combine feedbacks
-        combined_feedback = ""
-        if verification_feedback:
-            combined_feedback += f"VERIFICATION FEEDBACK:\n{verification_feedback}\n\n"
-        if user_feedback:
-            combined_feedback += f"USER FEEDBACK:\n{user_feedback}"
-        
-        # Execute refinement prompt
-        result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_UI_FEEDBACK_AGENT,
-            variables={
-                "ORIGINAL_FEATURE_JSON": json_to_gherkin(original_feature_json),
-                "COMBINED_FEEDBACK": combined_feedback.strip()
-            }
-        )
-        
-        # Parse and validate JSON response
-        json_data = self._parse_json_response(result, fallback=original_feature_json)
-        
-        # Validate the structure
-        is_valid, errors = validate_gherkin_json(json_data)
-        if not is_valid:
-            print(f"⚠️ JSON validation warnings: {errors}")
-        
-        return json_data
+        return self._generate(SYSTEM_INSTRUCTION_UI_REQ_AGENT, input_requirement)
 
-    def _format_chat_history(self, chat_messages: List[Dict[str, str]], max_messages: int = 6) -> str:
-        """
-        Format chat history for the LLM prompt.
-        
-        Args:
-            chat_messages: List of message dictionaries with 'role' and 'content' keys
-            max_messages: Maximum number of recent messages to include
-        
-        Returns:
-            str: Formatted chat history string
-        """
-        # Take only the last N messages
-        recent_messages = chat_messages[-max_messages:] if len(chat_messages) > max_messages else chat_messages
-        
-        formatted = []
-        for msg in recent_messages:
-            role = msg.get('role', 'user').upper()
-            content = msg.get('content', '')
-            formatted.append(f"[{role}]: {content}")
-        
-        return "\n\n".join(formatted)
+    def chat_refine_api_feature_file(self, current_feature_json, chat_messages, user_message, verification_output=""):
+        return self._chat_refine(
+            SYSTEM_INSTRUCTION_CHAT_REFINEMENT_AGENT, current_feature_json, chat_messages, user_message, verification_output
+        )
 
-    def chat_refine_api_feature_file(
+    def chat_refine_ui_feature_file(self, current_feature_json, chat_messages, user_message, verification_output=""):
+        return self._chat_refine(
+            SYSTEM_INSTRUCTION_UI_CHAT_REFINEMENT_AGENT, current_feature_json, chat_messages, user_message, verification_output
+        )
+
+    def _generate(self, system_instruction: str, input_requirement: str) -> Dict:
+        result = self._execute_prompt(system_instruction, {"INPUT_REQUIREMENTS": input_requirement})
+        return _validated(self._parse_json_response(result))
+
+    def _chat_refine(
         self,
+        system_instruction: str,
         current_feature_json: Dict,
         chat_messages: List[Dict[str, str]],
         user_message: str,
-        verification_output: str = ""
-    ) -> Tuple[str, str, Dict]:
-        """
-        Refine an API feature file through conversational chat.
-        
-        Args:
-            current_feature_json: Current feature file as JSON structure
-            chat_messages: List of previous chat messages [{role, content}, ...]
-            user_message: The latest user message/feedback
-            verification_output: Optional verification output to include
-        
-        Returns:
-            Tuple[str, str, Dict]: (intent, explanation text, proposed feature JSON or None)
-            - intent: "question" or "change"
-            - explanation: Response text for the user
-            - proposed_feature: Updated feature JSON (or None for questions)
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Format the current feature file
-        current_feature_text = json_to_gherkin(current_feature_json)
-        
-        # Format chat history
-        chat_history = self._format_chat_history(chat_messages)
-        
-        # Build the user message with optional verification
-        full_user_message = user_message
+        verification_output: str,
+    ) -> Tuple[str, str, Optional[Dict]]:
+        """Returns (intent, explanation, proposed_feature). proposed_feature is None for questions."""
         if verification_output:
-            full_user_message = f"[Verification Agent Feedback]\n{verification_output}\n\n[User Feedback]\n{user_message}"
-        
-        # Execute chat refinement prompt
+            user_message = f"[Verification Agent Feedback]\n{verification_output}\n\n[User Feedback]\n{user_message}"
+
         result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_CHAT_REFINEMENT_AGENT,
-            variables={
-                "CURRENT_FEATURE": current_feature_text,
-                "CHAT_HISTORY": chat_history if chat_history else "(No previous conversation)",
-                "USER_MESSAGE": full_user_message
-            }
+            system_instruction,
+            {
+                "CURRENT_FEATURE": json_to_gherkin(current_feature_json),
+                "CHAT_HISTORY": _format_chat_history(chat_messages) or "(No previous conversation)",
+                "USER_MESSAGE": user_message,
+            },
         )
-        
-        print(f"\n🐛 [DEBUG] Requirement Agent (API) LLM Response:\n{result}\n")
-        
-        # Parse the response which should have intent, explanation and proposed_feature
-        response_data = self._parse_json_response(result)
-        
-        intent = response_data.get("intent", "change")  # Default to change for backwards compatibility
-        explanation = response_data.get("explanation", "I've processed your request.")
-        proposed_feature = response_data.get("proposed_feature")
-        modifications = response_data.get("modifications", [])
-
-        # Questions: no changes
-        if intent == "question":
-            return intent, explanation, None
-
-        # Prefer surgical modifications when provided
-        if modifications:
-            try:
-                updated_feature = apply_feature_modifications(current_feature_json, modifications)
-                
-                # Auto-renumber scenario IDs if gaps are detected
-                if has_scenario_id_gaps(updated_feature):
-                    print("🔄 Auto-renumbering scenario IDs to fix gaps...")
-                    updated_feature, id_mapping = renumber_scenario_ids(updated_feature)
-                    if id_mapping:
-                        print(f"   Renumbered scenarios: {id_mapping}")
-                
-                is_valid, errors = validate_gherkin_json(updated_feature)
-                if not is_valid:
-                    print(f"⚠️ JSON validation warnings: {errors}")
-                return "change", explanation, updated_feature
-            except Exception as e:
-                print(f"⚠️ Failed to apply modifications: {e}")
-
-        # Regeneration path when explicitly requested
-        if intent == "regenerate" and proposed_feature is not None:
-            is_valid, errors = validate_gherkin_json(proposed_feature)
-            if not is_valid:
-                print(f"⚠️ JSON validation warnings: {errors}")
-            return intent, explanation, proposed_feature
-
-        # Backward-compatible: accept full proposed feature when present
-        if proposed_feature is not None:
-            is_valid, errors = validate_gherkin_json(proposed_feature)
-            if not is_valid:
-                print(f"⚠️ JSON validation warnings: {errors}")
-            return intent, explanation, proposed_feature
-
-        # No applicable change
-        return intent, explanation, None
-
-    def chat_refine_ui_feature_file(
-        self,
-        current_feature_json: Dict,
-        chat_messages: List[Dict[str, str]],
-        user_message: str,
-        verification_output: str = ""
-    ) -> Tuple[str, str, Dict]:
-        """
-        Refine a UI feature file through conversational chat.
-        
-        Args:
-            current_feature_json: Current feature file as JSON structure
-            chat_messages: List of previous chat messages [{role, content}, ...]
-            user_message: The latest user message/feedback
-            verification_output: Optional verification output to include
-        
-        Returns:
-            Tuple[str, str, Dict]: (intent, explanation text, proposed feature JSON or None)
-            - intent: "question" or "change"
-            - explanation: Response text for the user
-            - proposed_feature: Updated feature JSON (or None for questions)
-        
-        Raises:
-            ValueError: If LLM is not initialized
-        """
-        # Format the current feature file
-        current_feature_text = json_to_gherkin(current_feature_json)
-        
-        # Format chat history
-        chat_history = self._format_chat_history(chat_messages)
-        
-        # Build the user message with optional verification
-        full_user_message = user_message
-        if verification_output:
-            full_user_message = f"[Verification Agent Feedback]\n{verification_output}\n\n[User Feedback]\n{user_message}"
-        
-        # Execute chat refinement prompt
-        result = self._execute_prompt(
-            system_instruction=SYSTEM_INSTRUCTION_UI_CHAT_REFINEMENT_AGENT,
-            variables={
-                "CURRENT_FEATURE": current_feature_text,
-                "CHAT_HISTORY": chat_history if chat_history else "(No previous conversation)",
-                "USER_MESSAGE": full_user_message
-            }
-        )
-        
-        print(f"\n🐛 [DEBUG] Requirement Agent (UI) LLM Response:\n{result}\n")
-        
-        # Parse the response which should have intent, explanation and proposed_feature
-        response_data = self._parse_json_response(result)
-        
-        intent = response_data.get("intent", "change")  # Default to change for backwards compatibility
-        explanation = response_data.get("explanation", "I've processed your request.")
-        proposed_feature = response_data.get("proposed_feature")
-        modifications = response_data.get("modifications", [])
+        response = self._parse_json_response(result)
+        intent = response.get("intent", "change")
+        explanation = response.get("explanation", "I've processed your request.")
+        proposed = response.get("proposed_feature")
+        modifications = response.get("modifications", [])
 
         if intent == "question":
             return intent, explanation, None
 
+        # Prefer targeted modifications over a full rewrite: unchanged scenarios stay byte-identical.
         if modifications:
             try:
-                updated_feature = apply_feature_modifications(current_feature_json, modifications)
-                
-                # Auto-renumber scenario IDs if gaps are detected
-                if has_scenario_id_gaps(updated_feature):
-                    print("🔄 Auto-renumbering scenario IDs to fix gaps...")
-                    updated_feature, id_mapping = renumber_scenario_ids(updated_feature)
-                    if id_mapping:
-                        print(f"   Renumbered scenarios: {id_mapping}")
-                
-                is_valid, errors = validate_gherkin_json(updated_feature)
-                if not is_valid:
-                    print(f"⚠️ JSON validation warnings: {errors}")
-                return "change", explanation, updated_feature
+                updated = apply_feature_modifications(current_feature_json, modifications)
+                if has_scenario_id_gaps(updated):
+                    updated, _ = renumber_scenario_ids(updated)
+                return "change", explanation, _validated(updated)
             except Exception as e:
-                print(f"⚠️ Failed to apply modifications: {e}")
+                print(f"Failed to apply modifications: {e}")
 
-        if intent == "regenerate" and proposed_feature is not None:
-            is_valid, errors = validate_gherkin_json(proposed_feature)
-            if not is_valid:
-                print(f"⚠️ JSON validation warnings: {errors}")
-            return intent, explanation, proposed_feature
-
-        if proposed_feature is not None:
-            is_valid, errors = validate_gherkin_json(proposed_feature)
-            if not is_valid:
-                print(f"⚠️ JSON validation warnings: {errors}")
-            return intent, explanation, proposed_feature
-
+        if proposed is not None:
+            return intent, explanation, _validated(proposed)
         return intent, explanation, None
+
+
+def _validated(feature_json: Dict) -> Dict:
+    is_valid, errors = validate_gherkin_json(feature_json)
+    if not is_valid:
+        print(f"Feature JSON validation warnings: {errors}")
+    return feature_json
+
+
+def _format_chat_history(messages: List[Dict[str, str]], max_messages: int = 6) -> str:
+    return "\n\n".join(
+        f"[{m.get('role', 'user').upper()}]: {m.get('content', '')}" for m in messages[-max_messages:]
+    )
