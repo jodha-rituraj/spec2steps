@@ -21,3 +21,10 @@ def test_format_templates_accept_exactly_their_fields(template, fields):
     rendered = template.format(**fields)
     for value in fields.values():
         assert value in rendered
+
+
+def test_cucumber_placeholders_render_with_single_braces():
+    for template in (SYSTEM_INSTRUCTION_API_SCRIPT_JSON, SYSTEM_INSTRUCTION_UI_SCRIPT_JSON):
+        rendered = template.format(FEATURE_FILE="F", USER_ADDITIONAL_INPUT="U")
+        assert "{{" not in rendered.replace('{{"', "")
+    assert "{string}" in SYSTEM_INSTRUCTION_API_SCRIPT_JSON.format(FEATURE_FILE="F", USER_ADDITIONAL_INPUT="U")

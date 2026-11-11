@@ -62,9 +62,9 @@ class AutomationScriptAgent(BaseAgent):
         if isinstance(current_script_json, str):
             current_script_json = json.loads(current_script_json)
 
-        # str.replace, not str.format: the prompt contains literal JSON braces.
+        # Filled with str.replace (the inserted script is JSON), so unescape the template's {{ }} first.
         instruction = (
-            SYSTEM_INSTRUCTION_CHAT_SCRIPT_REFINEMENT_JSON
+            SYSTEM_INSTRUCTION_CHAT_SCRIPT_REFINEMENT_JSON.replace("{{", "{").replace("}}", "}")
             .replace("{CURRENT_SCRIPT_JSON}", json.dumps(current_script_json, indent=2))
             .replace("{CHAT_HISTORY}", _format_chat_history(chat_messages))
             .replace("{USER_MESSAGE}", user_message)
@@ -130,9 +130,8 @@ class AutomationScriptAgent(BaseAgent):
             if script_json is None:
                 # The model occasionally returns Java instead of JSON; generate Java and parse it.
                 print(f"Scenario {i}: JSON generation failed, falling back to Java")
-                java = self._clean_code_blocks(
-                    self._run(f"{java_instruction}:\n\n{scenario}\n\n{user_input}")
-                )
+                prompt = java_instruction.replace("{FEATURE_FILE}", scenario).replace("{USER_ADDITIONAL_INPUT}", user_input)
+                java = self._clean_code_blocks(self._run(prompt))
                 script_json = java_to_json(java)
             script_jsons.append(script_json)
         return script_jsons
