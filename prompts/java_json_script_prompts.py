@@ -66,10 +66,11 @@ You MUST output a JSON object following this EXACT schema:
                 {{"type": "String", "name": "orderId"}}
             ],
             "body": [
-                "RestAssured.baseURI = System.getProperty(\"baseUrl\", \"http://localhost:8080\");",
-                "response = given().when().get(\"/orders/\" + orderId).then().extract().response();",
+                "RestAssured.baseURI = System.getProperty(\\"baseUrl\\", \\"http://localhost:8080\\");",
+                "response = given().when().get(\\"/orders/\\" + orderId).then().extract().response();",
+                "logger.info(\\"GET /orders/{{}} -> {{}}\\", orderId, response.getStatusCode());",
                 "Assert.assertEquals(response.getStatusCode(), 200);",
-                "Assert.assertEquals(response.jsonPath().getString(\"id\"), orderId);"
+                "Assert.assertEquals(response.jsonPath().getString(\\"id\\"), orderId);"
             ]
         }}
     ]
@@ -98,6 +99,8 @@ For each step in the scenario:
    - Assertions using TestNG Assert
    - Logging statements
 5. Default base URI: System.getProperty("baseUrl", "http://localhost:8080"), unless the user specifies otherwise
+6. Each "body" entry is one line of Java source. Escape quotes ONLY as JSON requires: the Java string "id"
+   is written \\"id\\" inside the JSON, so the generated Java contains plain "id". Never double-escape.
 
 =====================================================
 VALIDATION REQUIREMENTS (CRITICAL)
