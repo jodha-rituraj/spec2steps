@@ -296,6 +296,39 @@ def apply_json_modification(script_json: Dict, modification: Dict) -> Dict:
     return result
 
 
+_ESCAPED = re.compile(r'\\(["\\])')
+
+
+def _java_string(text: str) -> str:
+    """Quote text as a Java string literal. Text that arrives already escaped is normalised first."""
+    raw = _ESCAPED.sub(r"\1", text)
+    return '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _repair_overescaped(line: str) -> str:
+    """
+    Models sometimes JSON-escape a Java line twice, producing e.g. getProperty(\\"baseUrl\\").
+    A backslash-quote outside a string literal is never valid Java, so only such lines are unescaped once.
+    """
+    in_string, i = False, 0
+    while i < len(line):
+        char = line[i]
+        if in_string:
+            if char == "\\":
+                i += 2
+                continue
+            in_string = char != '"'
+        elif char == "\\" and line[i + 1:i + 2] == '"':
+            return _ESCAPED.sub(r"\1", line)
+        elif char == "'":
+            i += 4 if line[i + 1:i + 2] == "\\" else 3
+            continue
+        elif char == '"':
+            in_string = True
+        i += 1
+    return line
+
+
 def _format_annotation(annotation: Dict) -> str:
     """Format an annotation dictionary to Java annotation string."""
     name = annotation.get("name", "")
@@ -303,7 +336,7 @@ def _format_annotation(annotation: Dict) -> str:
 
     if value is not None:
         if isinstance(value, str):
-            return f'@{name}("{value}")'
+            return f'@{name}({_java_string(value)})'
         elif isinstance(value, dict):
             attrs = ", ".join(f'{k} = "{v}"' if isinstance(v, str) else f'{k} = {v}'
                             for k, v in value.items())
@@ -356,7 +389,7 @@ def _format_method(method: Dict) -> List[str]:
     body = method.get("body", [])
     for body_line in body:
         if body_line.strip():
-            lines.append(f"    {body_line}")
+            lines.append(f"    {_repair_overescaped(body_line)}")
         else:
             lines.append("")
 

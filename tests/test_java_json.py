@@ -70,3 +70,32 @@ def test_modifications_are_applied_without_mutating_input():
     assert "import org.testng.Assert;" in java
     assert "public void apiIsUp() {\n        Assert.assertTrue(true);\n    }" in java
     assert script["className"] == "LoginSteps"
+
+
+def _method(annotation_value, body):
+    return {
+        "className": "T",
+        "methods": [{"name": "m", "annotations": [{"name": "When", "value": annotation_value}], "body": body}],
+    }
+
+
+def test_annotation_values_with_quotes_are_escaped_once():
+    plain = json_to_java(_method('I POST to "/api/v1/auth/login" with the credentials', []))
+    escaped = json_to_java(_method('I POST to \\"/api/v1/auth/login\\" with the credentials', []))
+    assert '@When("I POST to \\"/api/v1/auth/login\\" with the credentials")' in plain
+    assert plain == escaped
+    assert json_to_java(java_to_json(plain)) == plain
+
+
+def test_overescaped_body_lines_are_repaired_and_valid_lines_kept():
+    body = [
+        'RestAssured.baseURI = System.getProperty(\\"baseUrl\\", \\"http://localhost:8080\\");',
+        '.body(\\"{\\\\\\"email\\\\\\":\\\\\\"\\" + email + \\"\\\\\\"}\\")',
+        'String json = "{\\"email\\":\\"" + email + "\\"}";',
+        "char quote = '\"';",
+    ]
+    java = json_to_java(_method("x", body))
+    assert 'System.getProperty("baseUrl", "http://localhost:8080");' in java
+    assert '.body("{\\"email\\":\\"" + email + "\\"}")' in java
+    assert 'String json = "{\\"email\\":\\"" + email + "\\"}";' in java
+    assert "char quote = '\"';" in java
