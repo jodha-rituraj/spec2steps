@@ -8,6 +8,8 @@ load_dotenv()
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 REASONING_EFFORTS = ("low", "medium", "high")
+# Free tiers rate-limit by tokens per minute; the SDKs honour Retry-After between attempts.
+MAX_RETRIES = 6
 
 
 def get_llm(
@@ -25,7 +27,7 @@ def get_llm(
         key = (api_key or os.getenv("GROQ_API_KEY") or "").strip()
         if not key:
             raise ValueError("No Groq API key. Enter one in the sidebar or set GROQ_API_KEY.")
-        kwargs = {"api_key": key, "model": GROQ_MODEL, "temperature": 0.6}
+        kwargs = {"api_key": key, "model": GROQ_MODEL, "temperature": 0.6, "max_retries": MAX_RETRIES}
         if include_reasoning:
             kwargs["reasoning_effort"] = reasoning_effort if reasoning_effort in REASONING_EFFORTS else "medium"
         return ChatGroq(**kwargs)
@@ -45,6 +47,7 @@ def get_llm(
             azure_deployment=config["deployment name"].strip(),
             api_version=(api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")).strip(),
             temperature=0,
+            max_retries=MAX_RETRIES,
         )
 
     raise ValueError(f"Unsupported provider: {provider}")

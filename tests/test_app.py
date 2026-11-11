@@ -144,3 +144,18 @@ def test_generation_is_blocked_without_a_key(monkeypatch):
     at.text_area[0].input("Some requirement")
     click(at, "Generate Feature File & Verification")
     assert any("Configure an LLM provider" in e.value for e in at.error)
+
+
+def test_model_errors_are_shown_not_raised(monkeypatch):
+    class FailingModel(FakeListChatModel):
+        def _call(self, *args, **kwargs):
+            raise RuntimeError("Rate limit reached")
+
+    llm = FailingModel(responses=["unused"])
+    monkeypatch.setattr(core.llm, "get_llm", lambda *args, **kwargs: llm)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    at.text_area[0].input("Some requirement")
+    click(at, "Generate Feature File & Verification")
+    assert any("Model call failed: Rate limit reached" in e.value for e in at.error)

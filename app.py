@@ -141,6 +141,15 @@ def version_nav(index_key: str, total: int, prefix: str):
             st.rerun()
 
 
+def call_llm(fn, *args, **kwargs):
+    """Run a model call; on failure show the error and stop this run, leaving state untouched."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        st.error(f"Model call failed: {e}")
+        st.stop()
+
+
 def require_llm():
     if not st.session_state.api_key_valid:
         st.error("Configure an LLM provider in the sidebar first.")
@@ -265,12 +274,10 @@ def render_requirements_input():
     st.session_state.input_requirement = requirement
     agent = st.session_state.requirement_agent
     with st.spinner(f"Generating {st.session_state.test_type} feature file..."):
-        if st.session_state.test_type == "API":
-            feature_json = agent.generate_api_feature_file(requirement)
-        else:
-            feature_json = agent.generate_ui_feature_file(requirement)
+        generate = agent.generate_api_feature_file if st.session_state.test_type == "API" else agent.generate_ui_feature_file
+        feature_json = call_llm(generate, requirement)
     with st.spinner("Verifying against requirements..."):
-        verification = st.session_state.verification_agent.verify_feature_file(requirement, feature_json)
+        verification = call_llm(st.session_state.verification_agent.verify_feature_file, requirement, feature_json)
 
     st.session_state.feature_files = [feature_json]
     st.session_state.verification_outputs = [verification]
@@ -375,11 +382,10 @@ def render_feature_chat():
 
         apply_col, reject_col = st.columns(2)
         if apply_col.button("Apply", use_container_width=True, type="primary", key="apply_feature"):
-            s.feature_files.append(s.proposed_feature_json)
             with st.spinner("Verifying..."):
-                s.verification_outputs.append(
-                    s.verification_agent.verify_feature_file(s.input_requirement, s.proposed_feature_json)
-                )
+                verification = call_llm(s.verification_agent.verify_feature_file, s.input_requirement, s.proposed_feature_json)
+            s.feature_files.append(s.proposed_feature_json)
+            s.verification_outputs.append(verification)
             s.current_feature_version_index = len(s.feature_files) - 1
             s.chat_messages.append({"role": "assistant", "content": "Changes applied as a new version."})
             s.proposed_feature_json, s.awaiting_confirmation = None, False
@@ -533,10 +539,10 @@ def render_script_generation():
     agent = s.automation_agent
     count = len(feature_json.get("scenarios", []))
     with st.spinner(f"Generating {s.test_type} scripts for {count} scenario(s)..."):
-        if s.test_type == "API":
-            s.script_jsons = agent.generate_api_scripts_json_per_scenario(feature_json, context)
-        else:
-            s.script_jsons = agent.generate_ui_scripts_json_per_scenario(feature_json, context)
+        generate = (
+            agent.generate_api_scripts_json_per_scenario if s.test_type == "API" else agent.generate_ui_scripts_json_per_scenario
+        )
+        s.script_jsons = call_llm(generate, feature_json, context)
         s.java_files = [agent.script_json_to_java(sj) for sj in s.script_jsons]
     st.rerun()
 
