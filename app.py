@@ -99,13 +99,9 @@ def read_upload(uploaded_file) -> str:
 
 
 def unified_diff(current: str, proposed: str) -> str:
-    return "".join(
+    return "\n".join(
         difflib.unified_diff(
-            current.splitlines(keepends=True),
-            proposed.splitlines(keepends=True),
-            fromfile="Current Version",
-            tofile="Proposed Version",
-            lineterm="",
+            current.splitlines(), proposed.splitlines(), fromfile="current", tofile="proposed", lineterm=""
         )
     )
 
@@ -373,7 +369,7 @@ def render_feature_chat():
         with st.expander("View Proposed Changes (Diff)", expanded=True):
             diff = unified_diff(current_text, proposed_text)
             if diff:
-                st.code(diff, language="diff")
+                st.code(diff, language="diff", wrap_lines=True)
             else:
                 st.info("No differences from the current version.")
 
@@ -563,7 +559,7 @@ def render_script_chat():
         diff = unified_diff(s.script_versions[-1], s.proposed_script)
         if diff:
             with st.expander("View Changes (Diff)", expanded=True), st.container(height=300):
-                st.code(diff, language="diff")
+                st.code(diff, language="diff", wrap_lines=True)
         else:
             st.info("No visible changes.")
         with st.expander("View Full Proposed Script", expanded=False), st.container(height=300):

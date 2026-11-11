@@ -101,7 +101,9 @@ def test_requirements_to_refined_java(monkeypatch):
     assert any("Scenario: Valid login" in c for c in code_blocks(at, "gherkin"))
 
     send_chat(at, "Rename the scenario to Successful login")
-    assert any("+  Scenario: Successful login" in c for c in code_blocks(at, "diff"))
+    diff = next(c for c in code_blocks(at, "diff"))
+    assert diff.startswith("--- current\n+++ proposed\n@@")
+    assert "-  Scenario: Valid login\n+  Scenario: Successful login" in diff
     click(at, "Apply")
     assert any("Scenario: Successful login" in c for c in code_blocks(at, "gherkin"))
     assert any("Version 2 of 2" in m.value for m in at.markdown)
